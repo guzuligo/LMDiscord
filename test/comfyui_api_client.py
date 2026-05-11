@@ -19,7 +19,7 @@ import uuid
 import os
 import sys
 
-SERVER_ADDRESS = "http://127.0.0.1:8188"
+SERVER_ADDRESS = "http://localhost:8188"
 OUTPUT_DIR = "output_images"
 
 def send_workflow(workflow_data):
