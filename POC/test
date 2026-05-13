@@ -1,0 +1,25 @@
+"""
+Message Model Module
+
+This module defines the data model for messages exchanged between Discord users
+and the LM Studio. It structures messages for both Discord display and LM Studio API.
+
+Key Responsibilities:
+- Define message structure (content, author, timestamp, type)
+- Support different message types (user, assistant, system, tool)
+- Convert Discord messages to LM Studio format
+- Convert LM Studio responses to Discord-friendly format
+
+Key Features:
+- Standardized message format
+- Role-based message types (system, user, assistant)
+- Tool call result tracking
+- Timestamp tracking
+"""
+
+# TODO: Implement Message dataclass
+# - Fields: role (str), content (str), timestamp (datetime), message_id (str)
+# - Optional fields: tool_calls (list), tool_call_id (str), name (str)
+# - from_discord_message(discord_msg) -> Message: Create from Discord message
+# - to_lm_studio_format() -> dict: Convert to OpenAI chat format
+# - to_discord_format() -> str: Convert to Discord-friendly text

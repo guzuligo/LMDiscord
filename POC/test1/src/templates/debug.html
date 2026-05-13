@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Panel - Discord Bot + LM Studio</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='minimal.css') }}">
+</head>
+<body>
+    <div class="debug-container">
+        <!-- Header -->
+        <div class="debug-header">
+            <h1>🔧 Debug Panel</h1>
+            <button class="debug-close-btn" onclick="closeDebugPanel()">✕ Close</button>
+        </div>
+
+        <!-- Connection Status -->
+        <div class="debug-grid">
+            <!-- LM Studio Status -->
+            <div class="debug-panel">
+                <div class="debug-panel-title">🧠 LM Studio Connection</div>
+                <div class="connection-cards">
+                    <div class="connection-card">
+                        <div class="connection-card-title">Status</div>
+                        <div id="lmStatusDot" class="status-dot disconnected"></div>
+                        <div id="lmStatusText" style="margin-top: 8px; color: #cdd6f4;">Disconnected</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Discord Status -->
+            <div class="debug-panel">
+                <div class="debug-panel-title">🤖 Discord Bot Connection</div>
+                <div class="connection-cards">
+                    <div class="connection-card">
+                        <div class="connection-card-title">Status</div>
+                        <div id="discordStatusDot" class="status-dot disconnected"></div>
+                        <div id="discordStatusText" style="margin-top: 8px; color: #cdd6f4;">Not connected</div>
+                    </div>
+                </div>
+                <div style="margin-top: 10px;">
+                    <input type="text" class="settings-override-input" id="discordTokenInput" placeholder="Discord Bot Token" style="width: 100%; margin-bottom: 5px; font-size: 12px; padding: 4px 8px;">
+                    <button class="diagnostic-btn" style="width: 100%; font-size: 12px;" onclick="connectDiscordFromDebug()">🔌 Connect Discord</button>
+                </div>
+            </div>
+
+            <!-- Session Manager -->
+            <div class="debug-panel">
+                <div class="debug-panel-title">📋 Active Sessions</div>
+                <div class="session-list" id="sessionList">
+                    <div class="no-sessions">Loading sessions...</div>
+                </div>
+            </div>
+
+            <!-- Token Metrics -->
+            <div class="debug-panel">
+                <div class="debug-panel-title">📊 Token Metrics</div>
+                <div class="token-debug-grid">
+                    <div class="token-debug-item">
+                        <div class="token-debug-label">Prompt Tokens</div>
+                        <div class="token-debug-value" id="debugPromptTokens">-</div>
+                    </div>
+                    <div class="token-debug-item">
+                        <div class="token-debug-label">Completion Tokens</div>
+                        <div class="token-debug-value" id="debugCompletionTokens">-</div>
+                    </div>
+                    <div class="token-debug-item">
+                        <div class="token-debug-label">Total Tokens</div>
+                        <div class="token-debug-value" id="debugTotalTokens">-</div>
+                    </div>
+                </div>
+                <button class="diagnostic-btn" style="margin-top: 10px;" onclick="refreshDebugTokens()">🔄 Refresh Tokens</button>
+            </div>
+        </div>
+
+        <!-- Settings Override -->
+        <div class="debug-grid">
+            <div class="debug-panel full-width">
+                <div class="debug-panel-title">⚙️ Settings Override</div>
+                <div class="settings-override-grid">
+                    <div class="settings-override-item">
+                        <label class="settings-override-label">Temperature (0.0-2.0)</label>
+                        <input type="number" class="settings-override-input" id="debugTemperature" step="0.1" min="0" max="2" value="0.7">
+                        <button class="settings-override-save" onclick="saveSettingOverride('temperature', document.getElementById('debugTemperature').value)">Save</button>
+                    </div>
+                    <div class="settings-override-item">
+                        <label class="settings-override-label">Max Tokens (1-8192)</label>
+                        <input type="number" class="settings-override-input" id="debugMaxTokens" min="1" max="8192" value="2500">
+                        <button class="settings-override-save" onclick="saveSettingOverride('max_tokens', document.getElementById('debugMaxTokens').value)">Save</button>
+                    </div>
+                    <div class="settings-override-item">
+                        <label class="settings-override-label">Max Response Length (100-10000)</label>
+                        <input type="number" class="settings-override-input" id="debugMaxResponseLength" step="100" min="100" max="10000" value="2000">
+                        <button class="settings-override-save" onclick="saveSettingOverride('max_response_length', document.getElementById('debugMaxResponseLength').value)">Save</button>
+                    </div>
+                    <div class="settings-override-item">
+                        <label class="settings-override-label">Message Delay (1-30s)</label>
+                        <input type="number" class="settings-override-input" id="debugMessageDelay" min="1" max="30" value="5">
+                        <button class="settings-override-save" onclick="saveSettingOverride('message_delay', document.getElementById('debugMessageDelay').value)">Save</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- LM Studio Override -->
+        <div class="debug-grid">
+            <div class="debug-panel">
+                <div class="debug-panel-title">🧠 LM Studio Override</div>
+                <div class="settings-override-grid" style="grid-template-columns: 1fr;">
+                    <div class="settings-override-item">
+                        <label class="settings-override-label">Host</label>
+                        <input type="text" class="settings-override-input" id="debugLmHost" value="localhost">
+                    </div>
+                    <div class="settings-override-item">
+                        <label class="settings-override-label">Port</label>
+                        <input type="number" class="settings-override-input" id="debugLmPort" value="1234">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Diagnostics -->
+            <div class="debug-panel">
+                <div class="debug-panel-title">🔬 Diagnostics</div>
+                <div class="diagnostic-buttons">
+                    <button class="diagnostic-btn" onclick="testLmConnection()">🧪 Test LM Studio</button>
+                    <button class="diagnostic-btn" onclick="testDiscordConnection()">🤖 Test Discord</button>
+                    <button class="diagnostic-btn danger" onclick="forceDisconnectDiscord()">⛔ Disconnect Discord</button>
+                    <button class="diagnostic-btn warning" onclick="forceResetDiscord()">🔥 Force Reset Discord</button>
+                    <button class="diagnostic-btn danger" onclick="clearAllSessions()">🗑️ Clear All Sessions</button>
+                </div>
+                <div class="diagnostic-output" id="diagnosticOutput"></div>
+            </div>
+        </div>
+
+        <!-- Debug Logs -->
+        <div class="debug-log-panel">
+            <div class="debug-panel-title">📋 Application Logs</div>
+            <div class="debug-log-controls">
+                <select class="log-filter-select" id="logLevelFilter" onchange="onDebugLogLevelFilterChange()">
+                    <option value="ALL">All Levels</option>
+                    <option value="DEBUG">Debug</option>
+                    <option value="INFO">Info</option>
+                    <option value="WARNING">Warning</option>
+                    <option value="ERROR">Error</option>
+                    <option value="CRITICAL">Critical</option>
+                </select>
+                <button class="diagnostic-btn" onclick="clearDebugLogs()">Clear Logs</button>
+            </div>
+            <div class="debug-log-container" id="debugLogContainer">
+                <!-- Log entries appear here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Shared library modules -->
+    <script src="{{ url_for('static', filename='lib/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='lib/logs.js') }}"></script>
+    <!-- Debug page script -->
+    <script src="{{ url_for('static', filename='debug_script.js') }}"></script>
+</body>
+</html>

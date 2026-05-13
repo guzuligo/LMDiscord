@@ -21,7 +21,7 @@ Copy the example environment file and add your bot token:
 cp .env.example .env
 ```
 
-Edit `.env` and replace `your_bot_token_here` with your actual bot token from the [Discord Developer Portal](https://discord.com/developers/applications/REDACTED_APP_ID).
+Edit `.env` and replace `your_bot_token_here` with your actual bot token from the [Discord Developer Portal](https://discord.com/developers/applications/).
 
 ### 3. Run the Bot
 ```bash
@@ -31,7 +31,7 @@ python bot.py
 You should see:
 ```
 ✅ HelloWorldBot#1234 has connected to Discord!
-📖 Application ID: REDACTED_APP_ID
+📖 Application ID: <your_app_id>
 ```
 
 ## 🎮 How to Test
