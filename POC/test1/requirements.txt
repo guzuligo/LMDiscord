@@ -1,0 +1,15 @@
+# HTTP requests (for LM Studio API)
+requests>=2.31.0
+
+# Async HTTP client (for downloading images from Discord CDN)
+aiohttp>=3.9.0
+
+# Web framework
+flask>=3.0.0
+
+# Image Processing (for vision tools)
+Pillow>=10.0.0
+
+# Discord (for bot integration)
+discord.py>=2.3.2
+python-dotenv>=1.0.0

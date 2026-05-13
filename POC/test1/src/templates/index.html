@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Bot + LM Studio Chat POC</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='minimal.css') }}">
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <h1>Discord Bot + LM Studio Chat POC</h1>
+
+        <!-- Discord Connection Section -->
+        <div class="token-section">
+            <label>🤖 Discord Bot:</label>
+            <input type="password" class="token" id="discordTokenInput" placeholder="Discord Bot Token (or use .env)">
+            <button class="btn btn-primary" id="discordConnectBtn" onclick="connectDiscord()">Connect</button>
+            <button class="btn btn-danger" id="discordDisconnectBtn" onclick="disconnectDiscord()" disabled>Disconnect</button>
+            <div class="status">
+                <div class="status-dot" id="discordStatusDot"></div>
+                <span id="discordStatusText">Not connected</span>
+            </div>
+            <span class="token-display" id="tokenDisplay">(using .env token)</span>
+            <span id="discordIntegrationNote" style="font-size: 11px; color: #f38ba8; font-style: italic;">⚠️ Connect LM Studio first for AI responses</span>
+        </div>
+
+        <!-- LM Studio Connection Section -->
+        <div class="connection-bar">
+            <label>🧠 LM Studio:</label>
+            <input type="text" class="host" id="hostInput" value="localhost" placeholder="localhost">
+            <span>:</span>
+            <input type="text" class="port" id="portInput" value="1234" placeholder="1234">
+            <button class="btn btn-primary" id="connectBtn" onclick="connectLM()">Connect</button>
+            <button class="btn btn-secondary" onclick="clearChat()">Clear Chat</button>
+            <div class="status">
+                <div class="status-dot" id="lmStatusDot"></div>
+                <span id="lmStatusText">Disconnected</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model info -->
+    <div class="model-info" id="modelInfo">Model: Not connected | Discord Bot: Not connected</div>
+
+    <!-- Tab container -->
+    <div class="tab-container">
+        <!-- Tab buttons -->
+        <div class="tab-buttons">
+            <button class="tab-button active" onclick="switchTab('chat')">💬 Chat</button>
+            <button class="tab-button" onclick="switchTab('tokens')">📊 Tokens</button>
+            <button class="tab-button" onclick="switchTab('servers')">🔧 Servers</button>
+            <button class="tab-button" onclick="switchTab('logs')">📋 Logs <span id="logBadge" style="display:none; background:#f38ba8; color:#1e1e2e; padding:0 4px; border-radius:8px; font-size:10px; margin-left:4px;">0</span></button>
+        </div>
+        
+        <!-- Debug Panel Button -->
+        <div style="text-align: center; margin-top: 10px;">
+            <button class="btn btn-secondary" onclick="openDebugPanel()" style="padding: 6px 16px; font-size: 12px;">🔧 Debug Panel</button>
+        </div>
+
+        <!-- Settings bar -->
+        <div class="settings-section">
+            <span class="toggle-label">🔇 Suppress Werkzeug HTTP 200 logging:</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="suppressLoggingToggle" onchange="toggleWerkzeugLogging()">
+                <span class="toggle-slider"></span>
+            </label>
+            <span id="loggingStatusText" style="color: #6c7086; font-size: 11px;">Loading...</span>
+        </div>
+        <div class="settings-section settings-row-2">
+            <span class="toggle-label">⏱️ Discord Bot Message Delay:</span>
+            <input type="number" class="delay-input" id="delayInput" min="1" max="30" value="5" onchange="updateMessageDelay()">
+            <span class="toggle-label">seconds (range: 1-30)</span>
+            <span id="delayStatusText" class="delay-value-display">Loading...</span>
+        </div>
+        <div class="settings-section settings-row-2">
+            <span class="toggle-label">🧠 LM Studio Max Tokens:</span>
+            <input type="number" class="delay-input" id="maxTokensInput" min="1" max="8192" value="2500" onchange="updateMaxTokens()">
+            <span class="toggle-label">tokens (range: 1-8192)</span>
+            <span id="maxTokensStatusText" class="delay-value-display">Loading...</span>
+        </div>
+        <div class="settings-section settings-row-2">
+            <span class="toggle-label">🌡️ LM Studio Temperature:</span>
+            <input type="number" class="delay-input" id="temperatureInput" min="0" max="2" step="0.1" value="0.7" onchange="updateTemperature()">
+            <span class="toggle-label">range: 0.0-2.0</span>
+            <span id="temperatureStatusText" class="delay-value-display">Loading...</span>
+        </div>
+        <div class="settings-section settings-row-2">
+            <span class="toggle-label">📏 Max Response Length:</span>
+            <input type="number" class="delay-input" id="maxResponseLengthInput" min="100" max="10000" step="100" value="2000" onchange="updateMaxResponseLength()">
+            <span class="toggle-label">characters (range: 100-10000)</span>
+            <span id="maxResponseLengthStatusText" class="delay-value-display">Loading...</span>
+        </div>
+
+        <!-- System Prompt Section -->
+        <div class="system-prompt-section">
+            <span class="system-prompt-label">
+                🎭 Bot Personality / System Prompt:
+                <span style="font-size: 10px; color: #6c7086;">(defines how the bot behaves and responds)</span>
+            </span>
+            <textarea class="system-prompt-textarea" id="systemPromptTextarea" placeholder="Enter bot personality and instructions..."></textarea>
+            <div class="system-prompt-actions">
+                <button class="btn btn-primary btn-small" onclick="saveSystemPrompt()">💾 Save</button>
+                <button class="btn btn-secondary btn-small" onclick="resetSystemPrompt()">🔄 Reset to Default</button>
+                <span id="systemPromptStatusText" class="system-prompt-status">Loading...</span>
+            </div>
+        </div>
+
+        <!-- Chat tab -->
+        <div class="tab-content active" id="chat-tab">
+            <!-- Section divider -->
+            <div class="section-divider">
+                <span>Chat with LM Studio</span>
+            </div>
+
+            <!-- Chat area -->
+            <div class="chat-container" id="chatContainer">
+                <div class="message system">Welcome! Connect to LM Studio to start chatting, or connect the Discord bot to go live on Discord.</div>
+            </div>
+
+            <!-- Input area -->
+            <div class="input-area">
+                <input type="text" id="messageInput" placeholder="Type a message to LM Studio..." disabled onkeypress="handleKeyPress(event)">
+                <button class="btn btn-primary" id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+            </div>
+        </div>
+
+        <!-- Tokens tab -->
+        <div class="tab-content" id="tokens-tab">
+            <div class="tokens-container" id="tokensContainer">
+                <!-- Token Metrics Panel -->
+                <div class="token-metrics-panel">
+                    <div class="token-metrics-title">📊 Token Usage Metrics</div>
+                    <div class="token-metrics-grid">
+                        <div class="token-metric-item">
+                            <div class="token-metric-label">Prompt Tokens</div>
+                            <div class="token-metric-value" id="promptTokens">-</div>
+                        </div>
+                        <div class="token-metric-item">
+                            <div class="token-metric-label">Completion Tokens</div>
+                            <div class="token-metric-value" id="completionTokens">-</div>
+                        </div>
+                        <div class="token-metric-item">
+                            <div class="token-metric-label">Total Tokens</div>
+                            <div class="token-metric-value" id="totalTokens">-</div>
+                        </div>
+                        <div class="token-metric-item">
+                            <div class="token-metric-label">Speed</div>
+                            <div class="token-metric-value" id="tokensPerSecond">-</div>
+                        </div>
+                        <div class="token-metric-item">
+                            <div class="token-metric-label">Time</div>
+                            <div class="token-metric-value" id="totalTime">-</div>
+                        </div>
+                        <div class="token-metric-item">
+                            <div class="token-metric-label">Status</div>
+                            <div class="token-metric-value" id="tokenStatus">Idle</div>
+                        </div>
+                    </div>
+                    <div class="token-metrics-actions">
+                        <button class="btn btn-secondary btn-small" onclick="resetTokenMetrics()">🔄 Reset</button>
+                    </div>
+                </div>
+
+                <!-- Live Token Generation Display -->
+                <div class="token-stream-panel">
+                    <div class="token-stream-title">⚡ Live Token Generation</div>
+                    <div class="token-stream-content" id="tokenStreamContent">
+                        <div class="token-stream-placeholder">Send a message in the Chat tab to see real-time token generation...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Server Config tab -->
+        <div class="tab-content" id="servers-tab">
+            <div class="server-config-container" id="serverConfigContainer">
+                <div class="server-config-header">
+                    <h3>🔧 Server Configuration (FEAT-001)</h3>
+                    <p style="color: #6c7086; font-size: 12px;">Control which Discord servers and channels the bot responds to.</p>
+                </div>
+
+                <!-- Server List -->
+                <div class="server-config-section">
+                    <h4>📡 Configured Servers</h4>
+                    <div id="serverListContainer">
+                        <div class="server-config-placeholder" id="serverListPlaceholder">
+                            No servers configured yet. Add a server below to get started.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Add/Edit Server Form -->
+                <div class="server-config-section">
+                    <h4 id="serverFormTitle">➕ Add New Server</h4>
+                    <div class="server-form-grid">
+                        <div class="server-form-item">
+                            <label class="server-form-label">Server ID:</label>
+                            <input type="text" class="server-id-input" id="serverIdInput" placeholder="Discord Server/Guild ID">
+                        </div>
+                        <div class="server-form-item server-form-item-wide">
+                            <label class="server-form-label">Server Name (auto-detected):</label>
+                            <input type="text" class="server-name-input" id="serverNameInput" placeholder="Will auto-populate when Discord is connected" disabled>
+                        </div>
+                    </div>
+
+                    <!-- Server Settings -->
+                    <div class="server-settings-grid">
+                        <div class="server-setting-item">
+                            <label class="server-setting-label">
+                                <input type="checkbox" id="serverEnabledCheckbox" checked>
+                                <span>Enabled</span>
+                            </label>
+                            <span class="server-setting-desc">When disabled, bot ignores ALL messages from this server</span>
+                        </div>
+                        <div class="server-setting-item">
+                            <label class="server-setting-label">
+                                <span>Channel Mode:</span>
+                            </label>
+                            <div class="channel-mode-options">
+                                <label><input type="radio" name="channelMode" value="all" checked> All Channels</label>
+                                <label><input type="radio" name="channelMode" value="specific"> Specific Only</label>
+                            </div>
+                            <span class="server-setting-desc">All Channels = respond to all; Specific Only = only listed channels</span>
+                        </div>
+                    </div>
+
+                    <!-- Allowed Channels -->
+                    <div class="server-channels-section">
+                        <h5>✅ Allowed Channels (only used when Channel Mode = Specific Only)</h5>
+                        <div class="channel-input-row">
+                            <input type="text" class="channel-id-input" id="allowedChannelInput" placeholder="Channel ID">
+                            <button class="btn btn-secondary btn-small" onclick="addChannelToServer('allowed')">➕ Add</button>
+                        </div>
+                        <div class="channel-list" id="allowedChannelList">
+                            <div class="channel-list-placeholder">No allowed channels configured</div>
+                        </div>
+                    </div>
+
+                    <!-- Denied Channels -->
+                    <div class="server-channels-section">
+                        <h5>❌ Denied Channels (takes precedence over allowed channels)</h5>
+                        <div class="channel-input-row">
+                            <input type="text" class="channel-id-input" id="deniedChannelInput" placeholder="Channel ID">
+                            <button class="btn btn-secondary btn-small" onclick="addChannelToServer('denied')">➕ Add</button>
+                        </div>
+                        <div class="channel-list" id="deniedChannelList">
+                            <div class="channel-list-placeholder">No denied channels configured</div>
+                        </div>
+                    </div>
+
+                    <!-- Form Actions -->
+                    <div class="server-form-actions">
+                        <button class="btn btn-primary" id="saveServerBtn" onclick="saveServerConfig()">💾 Save Configuration</button>
+                        <button class="btn btn-secondary" id="cancelServerBtn" onclick="cancelServerEdit()" style="display:none;">Cancel</button>
+                        <button class="btn btn-danger btn-small" id="deleteServerBtn" onclick="deleteCurrentServer()" style="display:none;">🗑️ Delete Server</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs tab -->
+        <div class="tab-content" id="logs-tab">
+            <div class="log-container" id="logContainer">
+                <div class="message system" style="max-width: 100%;">Loading logs...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log panel (bottom, always visible) -->
+    <div class="log-resize-handle" id="logResizeHandle"></div>
+    <div class="log-panel" id="logPanel">
+        <div class="log-panel-header" onclick="toggleLogPanel()">
+            <div class="log-panel-header-left">
+                <span class="log-panel-title">
+                    <span class="toggle-icon">▼</span>
+                    📋 Application Logs
+                </span>
+                <div class="log-stats" id="logStats">
+                    <div class="log-stat">
+                        <div class="log-stat-dot" style="background: #89b4fa;"></div>
+                        <span id="infoCount">0</span>
+                    </div>
+                    <div class="log-stat">
+                        <div class="log-stat-dot" style="background: #f9e2af;"></div>
+                        <span id="warnCount">0</span>
+                    </div>
+                    <div class="log-stat">
+                        <div class="log-stat-dot" style="background: #f38ba8;"></div>
+                        <span id="errorCount">0</span>
+                    </div>
+                    <div class="log-stat">
+                        <span id="totalLogCount">Total: 0</span>
+                    </div>
+                </div>
+            </div>
+            <div class="log-panel-controls">
+                <select class="log-filter-select" id="logLevelFilter" onchange="onLogLevelFilterChange()">
+                    <option value="ALL">All Levels</option>
+                    <option value="DEBUG">Debug</option>
+                    <option value="INFO">Info</option>
+                    <option value="WARNING">Warning</option>
+                    <option value="ERROR">Error</option>
+                    <option value="CRITICAL">Critical</option>
+                </select>
+                <button class="btn btn-secondary btn-small" onclick="clearLogs()">Clear</button>
+                <button class="btn btn-secondary btn-small" onclick="refreshLogs()">Refresh</button>
+            </div>
+        </div>
+        <div class="log-container" id="logPanelContainer">
+            <!-- Log entries appear here -->
+        </div>
+    </div>
+
+    <!-- Shared library modules -->
+    <script src="{{ url_for('static', filename='lib/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='lib/settings.js') }}"></script>
+    <script src="{{ url_for('static', filename='lib/logs.js') }}"></script>
+    <script src="{{ url_for('static', filename='lib/token-metrics.js') }}"></script>
+    <script src="{{ url_for('static', filename='lib/server-config.js') }}"></script>
+    <!-- Main page script -->
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

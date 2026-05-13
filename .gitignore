@@ -1,6 +1,10 @@
 # Environment variables
 .env
 
+# Config files with potential secrets
+config.json
+POC/test1/config.json
+
 # Python
 __pycache__/
 *.py[cod]
@@ -22,6 +26,10 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Log files
+*.log
+app.log
 
 # Virtual environments
 venv/
