@@ -471,9 +471,16 @@ def register_discord_blueprints(bp):
         config_obj = Config()
         config_obj.set_server_config(server_id, config)
         
-        logger.info(f"Server config updated: {server_id} -> enabled={config['enabled']}, "
-                    f"allowed={len(config['allowed_channels'])} channels, "
-                    f"denied={len(config['denied_channels'])} channels", module="discord_api")
+        logger.info(f"📝 [CONFIG SAVE] Server config SAVED to disk:", 
+                    f"server_id={server_id}",
+                    f"enabled={config['enabled']}",
+                    f"allowed_channels={config['allowed_channels']}",
+                    f"denied_channels={config['denied_channels']}",
+                    module="discord_api")
+        
+        # Verify by re-reading
+        verify = config_obj.get_server_config(server_id)
+        logger.info(f"🔍 [CONFIG VERIFY] Re-read from disk: {verify}", module="discord_api")
         
         return jsonify({
             "success": True,
@@ -583,5 +590,67 @@ def register_discord_blueprints(bp):
             "success": True,
             "message": f"Server {server_id} removed from configuration"
         })
+
+    # ====================================================================
+    # Server/Channel Discovery Endpoints (UX-001)
+    # ====================================================================
+
+    @bp.route("/api/discord/servers", methods=["GET"])
+    def get_discord_servers():
+        """Get all servers (guilds) the bot is connected to.
+        
+        Returns:
+            JSON with list of servers including their names and member counts.
+        """
+        if not discord_connected or not discord_bot_instance:
+            return jsonify({
+                "success": False,
+                "message": "Discord bot is not connected"
+            }), 400
+        
+        try:
+            guilds = discord_bot_instance.get_guilds_info()
+            return jsonify({
+                "success": True,
+                "servers": guilds
+            })
+        except Exception as e:
+            logger.error(f"Error getting Discord servers: {e}", module="discord_api", exc=True)
+            return jsonify({
+                "success": False,
+                "message": str(e)
+            }), 500
+
+    @bp.route("/api/discord/channels/<guild_id>", methods=["GET"])
+    def get_discord_channels(guild_id):
+        """Get all text channels in a specific server.
+        
+        Args:
+            guild_id: Discord server/guild ID
+            
+        Returns:
+            JSON with list of channels including their names and categories.
+        """
+        if not discord_connected or not discord_bot_instance:
+            return jsonify({
+                "success": False,
+                "message": "Discord bot is not connected"
+            }), 400
+        
+        try:
+            logger.info(f"🔍 [CHANNELS API] Requesting channels for guild_id={guild_id}", module="discord_api")
+            channels = discord_bot_instance.get_guild_channels(guild_id)
+            logger.info(f"📋 [CHANNELS API] Found {len(channels)} channels for guild_id={guild_id}: {[(c['id'], c['name']) for c in channels]}", module="discord_api")
+            return jsonify({
+                "success": True,
+                "guild_id": guild_id,
+                "channels": channels
+            })
+        except Exception as e:
+            logger.error(f"Error getting Discord channels for guild {guild_id}: {e}", module="discord_api", exc=True)
+            return jsonify({
+                "success": False,
+                "message": str(e)
+            }), 500
 
     return bp
