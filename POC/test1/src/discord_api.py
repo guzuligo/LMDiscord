@@ -471,16 +471,29 @@ def register_discord_blueprints(bp):
         config_obj = Config()
         config_obj.set_server_config(server_id, config)
         
-        logger.info(f"📝 [CONFIG SAVE] Server config SAVED to disk:", 
-                    f"server_id={server_id}",
-                    f"enabled={config['enabled']}",
-                    f"allowed_channels={config['allowed_channels']}",
-                    f"denied_channels={config['denied_channels']}",
-                    module="discord_api")
+        logger.info(
+            f"📝 [CONFIG SAVE] Server config SAVED to disk: server_id={server_id}, enabled={config['enabled']}, allowed_channels={config['allowed_channels']}, denied_channels={config['denied_channels']}",
+            module="discord_api"
+        )
         
-        # Verify by re-reading
+        # Verify by re-reading from disk
         verify = config_obj.get_server_config(server_id)
         logger.info(f"🔍 [CONFIG VERIFY] Re-read from disk: {verify}", module="discord_api")
+        
+        # CRITICAL: Reload config in the running Discord bot instance so changes take effect immediately.
+        # The bot holds a stale Config reference from startup. We must reload from disk and update it.
+        if discord_bot_instance:
+            try:
+                fresh_config = Config()  # Creates new instance, loads from disk
+                discord_bot_instance._config = fresh_config
+                logger.info(
+                    f"🔄 [CONFIG RELOAD] Bot config reloaded from disk: enabled={fresh_config.is_server_enabled(server_id)}, "
+                    f"allowed={fresh_config.get_server_config(server_id)['allowed_channels']}, "
+                    f"denied={fresh_config.get_server_config(server_id)['denied_channels']}",
+                    module="discord_api"
+                )
+            except Exception as e:
+                logger.error(f"Failed to reload config in bot instance: {e}", module="discord_api", exc=True)
         
         return jsonify({
             "success": True,
@@ -520,6 +533,19 @@ def register_discord_blueprints(bp):
         config_obj = Config()
         config_obj.add_channel_to_server(server_id, channel_id, list_type)
         
+        # Reload config in running bot instance
+        if discord_bot_instance:
+            try:
+                fresh_config = Config()
+                discord_bot_instance._config = fresh_config
+                logger.info(
+                    f"🔄 [CONFIG RELOAD] After add_channel: server_id={server_id}, "
+                    f"{list_type}_channels={fresh_config.get_server_config(server_id).get(list_type + '_channels', [])}",
+                    module="discord_api"
+                )
+            except Exception as e:
+                logger.error(f"Failed to reload config in bot instance: {e}", module="discord_api", exc=True)
+        
         return jsonify({
             "success": True,
             "message": f"Channel {channel_id} added to {list_type} list for server {server_id}"
@@ -556,6 +582,19 @@ def register_discord_blueprints(bp):
         
         config_obj = Config()
         config_obj.remove_channel_from_server(server_id, channel_id, list_type)
+        
+        # Reload config in running bot instance
+        if discord_bot_instance:
+            try:
+                fresh_config = Config()
+                discord_bot_instance._config = fresh_config
+                logger.info(
+                    f"🔄 [CONFIG RELOAD] After remove_channel: server_id={server_id}, "
+                    f"{list_type}_channels={fresh_config.get_server_config(server_id).get(list_type + '_channels', [])}",
+                    module="discord_api"
+                )
+            except Exception as e:
+                logger.error(f"Failed to reload config in bot instance: {e}", module="discord_api", exc=True)
         
         return jsonify({
             "success": True,

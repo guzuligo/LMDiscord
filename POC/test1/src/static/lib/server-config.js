@@ -1,5 +1,50 @@
-// ==================== Server Configuration Module (FEAT-001 + UX-001) ====================
-// Self-contained server configuration management with auto-discovery
+// ==================== Server Configuration Module (FEAT-001 + UX-001 + FEAT-002) ====================
+// Self-contained server configuration management with auto-discovery and channel search/filter
+
+// ==================== Channel Search/Filter (FEAT-002) ====================
+
+/**
+ * Filter channel list items based on search term.
+ * Matches against channel name, ID, and category.
+ */
+function filterChannelList(listType) {
+    const searchId = listType === 'allowed' ? 'allowedChannelSearch' : 'deniedChannelSearch';
+    const listId = listType === 'allowed' ? 'allowedChannelList' : 'deniedChannelList';
+    const searchRowId = listType === 'allowed' ? 'allowedChannelSearchRow' : 'deniedChannelSearchRow';
+    
+    const searchTerm = document.getElementById(searchId).value.toLowerCase().trim();
+    const container = document.getElementById(listId);
+    const searchRow = document.getElementById(searchRowId);
+    
+    if (!container || !searchRow) return;
+    
+    // Show search row only when channels are discovered
+    searchRow.style.display = serverConfigState.currentChannels.length > 0 ? 'block' : 'none';
+    
+    if (!searchTerm) {
+        // No filter - show all items
+        container.querySelectorAll('.channel-list-item').forEach(item => {
+            item.classList.remove('hidden');
+        });
+        return;
+    }
+    
+    // Filter channel items by name, category, or ID
+    container.querySelectorAll('.channel-list-item').forEach(item => {
+        const channelName = (item.querySelector('[data-channel-name]')?.dataset.channelName || '').toLowerCase();
+        const channelId = (item.querySelector('[data-channel-id]')?.dataset.channelId || '').toLowerCase();
+        const category = (item.querySelector('[data-channel-category]')?.dataset.channelCategory || '').toLowerCase();
+        const displayText = (item.querySelector('.channel-id-text')?.textContent || '').toLowerCase();
+        
+        const matches = channelName.includes(searchTerm) || 
+                       channelId.includes(searchTerm) || 
+                       category.includes(searchTerm) ||
+                       displayText.includes(searchTerm);
+        
+        item.classList.toggle('hidden', !matches);
+    });
+}
+
 
 const serverConfigState = {
     currentServerId: null,
@@ -141,6 +186,13 @@ async function loadDiscordChannels(guildId) {
         if (data.success) {
             serverConfigState.currentChannels = data.channels || [];
             renderChannelPicker();
+            
+            // FEAT-002: Show search rows when channels are loaded
+            const allowedSearchRow = document.getElementById('allowedChannelSearchRow');
+            const deniedSearchRow = document.getElementById('deniedChannelSearchRow');
+            if (allowedSearchRow) allowedSearchRow.style.display = serverConfigState.currentChannels.length > 0 ? 'block' : 'none';
+            if (deniedSearchRow) deniedSearchRow.style.display = serverConfigState.currentChannels.length > 0 ? 'block' : 'none';
+            
             addMessage(`✅ Found ${serverConfigState.currentChannels.length} text channel(s)`, 'system');
         } else {
             addMessage(`❌ Failed to load channels: ${data.message}`, 'error');
@@ -479,7 +531,12 @@ function renderChannelList(containerId, channels) {
         const displayName = discordChannel ? `# ${discordChannel.name}` : channelId;
         
         item.innerHTML = `
-            <span class="channel-id-text">${displayName}</span>
+            <span class="channel-id-text" 
+                  data-channel-name="${discordChannel?.name || ''}" 
+                  data-channel-category="${discordChannel?.category || ''}" 
+                  data-channel-id="${channelId}">
+                ${displayName}
+            </span>
             <button class="channel-remove-btn" onclick="removeChannelFromServer('${listType}', '${channelId}')">✕</button>
         `;
         container.appendChild(item);

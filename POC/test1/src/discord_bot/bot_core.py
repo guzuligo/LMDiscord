@@ -715,7 +715,7 @@ class DiscordBot:
         guilds = []
         for guild in self.client.guilds:
             guilds.append({
-                "id": guild.id,
+                "id": str(guild.id),
                 "name": guild.name,
                 "member_count": guild.member_count,
                 "channels": len(guild.text_channels)

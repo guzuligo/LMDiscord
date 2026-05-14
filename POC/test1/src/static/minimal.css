@@ -170,6 +170,15 @@ input:disabled { opacity: 0.5; cursor: not-allowed; }
 .channel-list-item { display: flex; justify-content: space-between; background: #1e1e2e; border-radius: 3px; padding: 4px 8px; font-size: 11px; font-family: monospace; }
 .channel-list-item .channel-id-text { color: #89b4fa; }
 .channel-list-item .channel-remove-btn { background: none; border: none; color: #f38ba8; cursor: pointer; font-size: 12px; }
+.channel-list-item.hidden { display: none; }
+.channel-search-row { margin: 5px 0; padding: 4px 0; }
+.channel-search-input {
+    width: 100%; padding: 5px 8px; background: #1e1e2e; color: #cdd6f4;
+    border: 1px solid #45475a; border-radius: 4px; font-size: 11px;
+    box-sizing: border-box;
+}
+.channel-search-input:focus { outline: none; border-color: #89b4fa; }
+.channel-search-input::placeholder { color: #6c7086; }
 .server-form-actions { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #313244; }
 .server-setting-item { margin-bottom: 6px; }
 .server-setting-label { display: flex; align-items: center; gap: 6px; }
