@@ -133,11 +133,44 @@ _No issues marked as won't fix._
 |-------|-------|
 | **ID** | FEAT-001 |
 | **Date** | 2026-05-13 |
-| **Status** | 🔄 In Progress |
+| **Status** | ✅ Backend Complete, UI Needs UX Improvements |
 | **Severity** | Medium |
 | **Description** | Implement per-server enable/disable and per-channel allow/deny lists so the bot can be selectively enabled across multiple Discord servers. Also includes a "Server Config" tab in the web UI for managing these settings. |
-| **Features** | 1. Per-server enable/disable toggle in `config.json` 2. Per-server channel allow/deny lists 3. Web UI "Server Config" tab 4. API endpoints for server management 5. Bot_core checks to skip messages from disabled servers/channels |
-| **Files to Modify** | `src/config.py`, `src/discord_bot/bot_core.py`, `src/discord_api.py`, `src/templates/index.html`, `src/static/script.js`, `src/static/styles.css`, `app_Plan.md` |
+| **Features Implemented** | 1. Per-server enable/disable toggle in `config.json` ✅ 2. Per-server channel allow/deny lists ✅ 3. Web UI "Server Config" tab ✅ 4. API endpoints for server management ✅ 5. Bot_core checks to skip messages from disabled servers/channels ✅ |
+| **Files Modified** | `src/config.py`, `src/discord_bot/bot_core.py`, `src/discord_api.py`, `src/templates/index.html`, `src/static/lib/server-config.js` |
+| **Known UX Limitations** | See UX-001 below |
+
+---
+
+### 🆕 UX-001: Server Config Missing Auto-Discovery Features
+
+| Field | Value |
+|-------|-------|
+| **ID** | UX-001 |
+| **Date** | 2026-05-14 |
+| **Status** | ✅ Solved |
+| **Severity** | High |
+| **Date Solved** | 2026-05-14 |
+| **Description** | The Server Config UI required users to manually type Discord Server IDs and Channel IDs, which was cumbersome and error-prone. |
+| **Fixes Applied** | 1. Added `get_guilds_info()` and `get_guild_channels()` methods to DiscordBot class in `bot_core.py` 2. Added `/api/discord/servers` endpoint to list all guilds with names 3. Added `/api/discord/channels/<guild_id>` endpoint to list channels with names and categories 4. Added "📡 Load Servers from Discord" button in Server Config tab header 5. Added quick-add dropdown for servers when discovered 6. Added "🔍 Load Channels from Discord" button when editing a server 7. Added quick-add dropdown for channels when discovered 8. Server list now displays names: "My Server (123456789012345678)" 9. Channel list now displays names: "#general (111111111111111111)" |
+| **Files Modified** | `src/discord_bot/bot_core.py` (added get_guild_channels method), `src/discord_api.py` (added /api/discord/servers and /api/discord/channels endpoints), `src/static/lib/server-config.js` (added auto-discovery UI logic), `src/templates/index.html` (added Load Servers button) |
+
+---
+
+### 🆕 BUG-004: Channel Filter Shows Empty Config Due to Server ID Mismatch
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-004 |
+| **Date** | 2026-05-14 |
+| **Status** | 🔄 In Progress |
+| **Severity** | High |
+| **Description** | The bot processes messages from all channels despite denied_channels being configured in config.json. Debug logs show `allowed_channels=[]` and `denied_channels=[]` for the active server. |
+| **Root Cause** | **Server ID Mismatch**: The server ID in config.json (`1502926835862864000`) does NOT match the actual Discord guild ID (`1502926835862863944`). The last few digits differ. The bot looks up the config using the actual guild ID from the message, finds no matching entry, and uses the default config (enabled, all channels allowed). |
+| **Log Evidence** | Config saved for: `1502926835862864000` | Bot processing guild: `1502926835862863944` |
+| **Debug Logging Added** | 1. `bot_core.py`: Added detailed channel filter debug logging showing guild_id, channel_id, allowed_channels, denied_channels, and is_channel_allowed result 2. `discord_api.py`: Added config save/verify logging and channel API request logging |
+| **Fix Required** | User must update the server ID in `config.json` to match the actual Discord guild ID. The "Load Servers from Discord" button should be used to discover the correct server ID automatically. |
+| **Files Modified** | `src/discord_bot/bot_core.py` (added debug logging), `src/discord_api.py` (added config save/verify logging, channel API logging) |
 
 ---
 

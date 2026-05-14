@@ -305,10 +305,19 @@ class DiscordBot:
                 logger.info(f"🚫 Server '{guild_name}' ({guild_id}) is disabled, ignoring message")
                 return
             
-            # Check if channel is allowed
-            if self._config and not self._config.is_channel_allowed(guild_id, str(channel_id)):
-                logger.info(f"🚫 Channel '{message.channel.name}' ({channel_id}) not allowed in server '{guild_name}'")
-                return
+            # Debug: Log channel filtering details
+            if self._config:
+                server_config = self._config.get_server_config(guild_id)
+                logger.info(f"🔍 Channel filter debug for guild={guild_id} ({guild_name}), channel={channel_id} ({message.channel.name if hasattr(message.channel, 'name') else 'DM'}):")
+                logger.info(f"   allowed_channels={server_config.get('allowed_channels', [])}")
+                logger.info(f"   denied_channels={server_config.get('denied_channels', [])}")
+                is_allowed = self._config.is_channel_allowed(guild_id, str(channel_id))
+                logger.info(f"   is_channel_allowed({channel_id}) = {is_allowed}")
+                if not is_allowed:
+                    logger.info(f"🚫 Channel '{message.channel.name}' ({channel_id}) not allowed in server '{guild_name}', ignoring message")
+                    return
+            else:
+                logger.info(f"⚠️ No config available, skipping channel filter for channel={channel_id}")
 
         # Extract image attachments from message
         image_attachments = self._extract_image_attachments(message)
@@ -745,3 +754,40 @@ class DiscordBot:
             return {}
         
         return self._config.get_servers()
+
+    # --- Channel Discovery (UX-001) ---
+
+    def get_guild_channels(self, guild_id: str) -> list:
+        """Get information about text channels in a specific guild.
+        
+        Args:
+            guild_id: Discord guild/server ID
+            
+        Returns:
+            List of dicts with channel info (id, name, position)
+        """
+        if not self.client.is_ready():
+            return []
+        
+        # Find the guild by ID
+        guild = None
+        for g in self.client.guilds:
+            if str(g.id) == str(guild_id):
+                guild = g
+                break
+        
+        if not guild:
+            return []
+        
+        channels = []
+        for channel in guild.text_channels:
+            channels.append({
+                "id": str(channel.id),
+                "name": channel.name,
+                "position": channel.position,
+                "category": channel.category.name if channel.category else "Uncategorized"
+            })
+        
+        # Sort by position ( Discord API already returns sorted, but ensure it)
+        channels.sort(key=lambda x: x["position"])
+        return channels

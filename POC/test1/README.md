@@ -24,13 +24,27 @@ Proof of Concept implementation for a Python desktop application with a GUI that
 - LM Studio integration via OpenAI-compatible API
 - Tool calling system (end_session, image_describe)
 - Flask web interface with Chat, Tokens, **Servers**, Settings, Logs tabs
-- **Server Configuration System** (FEAT-001): Per-server enable/disable and per-channel allow/deny lists
+- **Server Configuration System** (FEAT-001 + UX-001): Per-server enable/disable and per-channel allow/deny lists
+  - **Auto-discovery**: Click "📡 Load Servers from Discord" to browse servers the bot is connected to
+  - **Quick-add servers**: Select a server from dropdown and add it to config instantly
+  - **Server names**: Servers displayed with human-readable names (e.g., "My Server (123456789012345678)")
+  - **Channel auto-discovery**: Click "🔍 Load Channels from Discord" when editing a server
+  - **Channel names**: Channels displayed with names (e.g., "#general (111111111111111111)")
+  - **Quick-add channels**: Select channels from dropdown to add to allowed/denied lists
 - Debug panel at /debug route
 - Session-based conversation management
 - Message queuing during processing
 - Configurable settings (temperature, max_tokens, delay, system prompt)
 - Safe image download with hostname whitelist
 - Token metrics streaming display
+
+## Recent Features (5/14/2026 - UX-001)
+- **Server Config Auto-Discovery**: Added auto-discovery of Discord servers and channels
+  - Backend: `get_guilds_info()` and `get_guild_channels()` methods in DiscordBot class
+  - API: `/api/discord/servers` and `/api/discord/channels/<guild_id>` endpoints
+  - Frontend: Auto-discovery UI with server/channel dropdown pickers
+  - Server list now shows names alongside IDs
+  - Channel list now shows names alongside IDs
 
 ## Recent Features (5/13/2026 - FEAT-001)
 - **Server Configuration System**: Per-server enable/disable and per-channel allow/deny lists

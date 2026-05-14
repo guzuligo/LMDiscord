@@ -128,8 +128,7 @@ function updateLogDisplay(logs, stats) {
 function updateDebugLogDisplay(logs) {
     // Only run on debug page where debugState is defined
     if (typeof debugState === 'undefined') {
-        console.warn('[logs.js] updateDebugLogDisplay called but debugState is undefined - not on debug page');
-        return;
+        return; // Silently skip when not on debug page
     }
     if (!logs) {
         console.warn('[logs.js] updateDebugLogDisplay called with no logs data');

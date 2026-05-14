@@ -616,16 +616,47 @@ WARNING - Image download blocked: URL blocked: Hostname 'evil.com' not in allowe
 
 ## Planned Features
 
-### 🆕 Server Configuration System (In Progress - FEAT-001)
-- **Status**: 🔄 In Progress
+### 🆕 Server Configuration System (Backend Complete, UX Improvements Planned - FEAT-001)
+- **Status**: ✅ Backend Complete, UI UX Improvements In Progress (UX-001)
 - **Description**: Per-server enable/disable and per-channel allow/deny lists with web UI management
-- **Implementation Plan**:
-  1. **config.py** - Add `servers` configuration section with per-server settings
-  2. **bot_core.py** - Add `_is_server_enabled()` and `_is_channel_allowed()` checks in message handler
-  3. **discord_api.py** - Add `GET /api/servers`, `POST /api/servers/update` endpoints
-  4. **index.html** - Add "Server Config" tab
-  5. **script.js** - Server config UI logic
-  6. **styles.css** - Server config panel styling
+- **Completed Implementation**:
+  1. **config.py** - ✅ Added `servers` configuration section with per-server settings (lines 204-343)
+  2. **bot_core.py** - ✅ Added `_is_server_enabled()` and `_is_channel_allowed()` checks in message handler
+  3. **discord_api.py** - ✅ Added all server management API endpoints (lines 391-587)
+  4. **index.html** - ✅ Added "Server Config" tab (lines 175-260)
+  5. **server-config.js** - ✅ Full CRUD UI logic (280 lines)
+- **Known UX Limitations** (See UX-001 in issues_tracker.md):
+  1. ❌ No auto-discovery of Discord servers - must manually type server IDs
+  2. ❌ Server list shows only raw IDs, no human-readable server names
+  3. ❌ No auto-discovery of channels - must manually type channel IDs
+  4. ❌ Channel lists show only raw IDs, no channel names or #prefix
+
+### 🆕 UX-001: Server Config Auto-Discovery (Completed - 2026-05-14)
+- **Status**: ✅ Completed
+- **Description**: Add auto-discovery of Discord servers and channels to the Server Config UI
+- **Implementation Status**:
+  1. **bot_core.py** - ✅ Added `get_guilds_info()` and `get_guild_channels(guild_id)` methods to DiscordBot class
+  2. **discord_api.py** - ✅ Added `GET /api/discord/servers` endpoint (list all guilds with names)
+  3. **discord_api.py** - ✅ Added `GET /api/discord/channels/<guild_id>` endpoint (list channels with names and categories)
+  4. **server-config.js** - ✅ Added "📡 Load Servers from Discord" button and auto-discovery logic
+  5. **server-config.js** - ✅ Added "🔍 Load Channels from Discord" button when editing a server
+  6. **server-config.js** - ✅ Server list now shows names: "My Server (123456789012345678)"
+  7. **server-config.js** - ✅ Channel list now shows names: "#general (111111111111111111) (Category)"
+  8. **index.html** - ✅ Added "📡 Load Servers from Discord" button in Server Config tab header
+  9. **server-config.js** - ✅ Added quick-add dropdown for servers when discovered
+  10. **server-config.js** - ✅ Added quick-add dropdown for channels when discovered
+
+### 🆕 BUG-004: Channel Filter Not Working Due to Server ID Mismatch (Investigating - 2026-05-14)
+- **Status**: 🔄 Investigating
+- **Description**: The bot processes messages from all channels despite denied_channels being configured in config.json.
+- **Root Cause Found**: Server ID mismatch between config.json and actual Discord guild ID.
+  - Config saved for: `1502926835862864000`
+  - Actual Discord guild: `1502926835862863944`
+  - The bot looks up config using actual guild ID, finds no match, uses default (all channels allowed)
+- **Debug Logging Added**:
+  1. **bot_core.py** - Added detailed channel filter debug logging (guild_id, channel_id, allowed_channels, denied_channels, is_channel_allowed result)
+  2. **discord_api.py** - Added config save/verify logging and channel API request logging
+- **Fix Required**: User must update config.json server ID to match actual Discord guild ID, or use the "Load Servers from Discord" feature to auto-discover the correct ID.
 
 ---
 
