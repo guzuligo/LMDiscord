@@ -646,142 +646,42 @@ WARNING - Image download blocked: URL blocked: Hostname 'evil.com' not in allowe
   9. **server-config.js** - ✅ Added quick-add dropdown for servers when discovered
   10. **server-config.js** - ✅ Added quick-add dropdown for channels when discovered
 
-### 🆕 BUG-004: Channel Filter Not Working Due to Server ID Mismatch (Investigating - 2026-05-14)
-- **Status**: 🔄 Investigating
+### 🆕 BUG-004: Channel Filter Not Working Due to Server ID Mismatch (Solved - 2026-05-14)
+- **Status**: ✅ Solved
 - **Description**: The bot processes messages from all channels despite denied_channels being configured in config.json.
-- **Root Cause Found**: Server ID mismatch between config.json and actual Discord guild ID.
+- **Root Cause**: Server ID mismatch between config.json and actual Discord guild ID.
   - Config saved for: `1502926835862864000`
   - Actual Discord guild: `1502926835862863944`
   - The bot looks up config using actual guild ID, finds no match, uses default (all channels allowed)
+- **Fix Applied**: Updated config.json server ID from `1502926835862864000` to `1502926835862863944`
 - **Debug Logging Added**:
   1. **bot_core.py** - Added detailed channel filter debug logging (guild_id, channel_id, allowed_channels, denied_channels, is_channel_allowed result)
   2. **discord_api.py** - Added config save/verify logging and channel API request logging
-- **Fix Required**: User must update config.json server ID to match actual Discord guild ID, or use the "Load Servers from Discord" feature to auto-discover the correct ID.
+- **Files Modified**: `config.json`, `src/discord_bot/bot_core.py`, `src/discord_api.py`
+
+### 🆕 BUG-005: Server Config Changes Not Applied to Running Bot (Stale Config Reference - Solved - 2026-05-14)
+- **Status**: ✅ Solved
+- **Description**: Server/channel config changes saved to disk via the web UI were not reflected in bot behavior. The bot continued showing `allowed_channels=[]` and `denied_channels=[]` even after saving config.
+- **Root Cause**: The Discord bot holds a stale `Config` instance from startup. When the API saves config, it creates a **new** `Config()` instance, saves to disk, and returns. The bot's `_config` is never updated with the new data.
+- **Fix Applied**: After saving config in `update_server_config()`, `add_channel_to_server()`, and `remove_channel_from_server()` endpoints, the bot instance's `_config` is now replaced with a fresh `Config()` instance that reloads from disk.
+- **Files Modified**: `src/discord_api.py` → `update_server_config()`, `add_channel_to_server()`, `remove_channel_from_server()`
+
+### 🆕 BUG-006: Auto-Discover Returns Wrong Server ID (JavaScript Integer Precision Loss - Solved - 2026-05-14)
+- **Status**: ✅ Solved
+- **Severity**: Critical
+- **Description**: The "Load Servers from Discord" feature returned server IDs with corrupted last digits (e.g., `1502926835862863944` became `1502926835862864000`). This caused the server config save to use the wrong ID, so channel filters never worked.
+- **Root Cause**: Discord snowflake IDs are 19 digits, exceeding JavaScript's `MAX_SAFE_INTEGER` (16 digits). The `get_guilds_info()` method returned guild IDs as **integers**, which get corrupted when passed through JSON → JavaScript → backend. Channel IDs were already correctly returned as strings.
+- **Fix Applied**: Changed `get_guilds_info()` to return `str(guild.id)` instead of `guild.id`, matching how channel IDs are handled in `get_guild_channels()`.
+- **Files Modified**: `src/discord_bot/bot_core.py` → `get_guilds_info()` method
+
+### Logger TypeError Fix (Solved - 2026-05-14)
+- **Status**: ✅ Solved
+- **Description**: Flask app threw `TypeError: Logger.info() got multiple values for argument 'module'` when saving server config from web UI.
+- **Root Cause**: `discord_api.py` was calling `logger.info()` with multiple positional string arguments plus a `module` keyword argument, but the custom Logger class only accepts `(message: str, module: str = "")`.
+- **Fix Applied**: Changed `logger.info()` call in `update_server_config()` to use a single formatted string: `logger.info(f"[ServerConfig] Server config updated for {server_id}: enabled={enabled}")`
+- **Files Modified**: `src/discord_api.py` → `update_server_config()`
 
 ---
-
-### 🆕 Discord Channel Search Tool (Planned)
-- **Status**: ⏳ Planned
-- **Description**: A tool that allows LM Studio to search through Discord channel messages for context
-- **User Story**: As the bot, I need to search Discord message history to answer questions about previous conversations
-
-#### Implementation Plan
-
-##### Tool Definition (OpenAI-compatible format)
-```json
-{
-  "type": "function",
-  "function": {
-    "name": "search_discord_channels",
-    "description": "Search through Discord channel messages for keywords or list available channels. Use when the user asks about previous conversations, who said something, or when you need context from Discord message history.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "action": {
-          "type": "string",
-          "enum": ["search", "list_channels", "get_channel_info", "search_by_user"],
-          "description": "The search action to perform"
-        },
-        "query": {
-          "type": "string",
-          "description": "Search keyword/query (used with 'search' action)"
-        },
-        "channel_id": {
-          "type": "string",
-          "description": "Discord channel ID (used with 'get_channel_info' action)"
-        },
-        "user_id": {
-          "type": "string",
-          "description": "Discord user ID (used with 'search_by_user' action)"
-        },
-        "limit": {
-          "type": "integer",
-          "description": "Maximum number of results to return (default: 10)",
-          "default": 10
-        }
-      },
-      "required": ["action"]
-    }
-  }
-}
-```
-
-##### Configuration Options
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `search_scope` | string | "active_channel" | Where to search: "active_channel", "all_channels", "specified_channels" |
-| `specified_channel_ids` | array | [] | List of channel IDs to search (used when scope = "specified_channels") |
-| `include_source_info` | boolean | true | Include source metadata (channel name, message ID, author, timestamp) in results |
-| `enable_tool` | boolean | false | Master toggle to enable/disable this tool |
-
-##### Source Metadata (included when `include_source_info = true`)
-Each search result will include:
-- `channel_id`: Discord channel ID
-- `channel_name`: Human-readable channel name
-- `message_id`: Discord message ID
-- `author`: Message author display name
-- `author_id`: Discord user ID
-- `timestamp`: ISO 8601 timestamp
-- `is_in_channel`: Whether this channel was explicitly targeted
-
-##### File Structure
-| File | Purpose |
-|------|---------|
-| `src/tools/builtins/discord_search.py` | New tool implementation |
-| `src/tools/builtins/__init__.py` | Register the new tool |
-| `src/config.py` | Add search configuration options |
-| `src/discord_bot/message_handler.py` | Wire tool into tools list |
-| `src/templates/index.html` | Add settings UI for search config |
-| `src/static/script.js` | Add UI handlers for search settings |
-
-##### Data Flow
-```
-LM Studio calls search_discord_channels(action="search", query="hello")
-        ↓
-message_handler.py receives tool call
-        ↓
-discord_search.py executes search based on config scope
-        ↓
-Results with source metadata returned to LM Studio
-        ↓
-LM Studio decides how to use the data in response
-```
-
-##### Tool Execution Examples
-
-**Example 1: Search current channel**
-```
-Input: {"action": "search", "query": "hello", "limit": 5}
-Output: [
-  {"message": "Hello bot!", "author": "User1", "timestamp": "...", "source": {"channel": "general", ...}},
-  ...
-]
-```
-
-**Example 2: List all accessible channels**
-```
-Input: {"action": "list_channels"}
-Output: [
-  {"channel_id": "123...", "channel_name": "general", "message_count": 150},
-  {"channel_id": "456...", "channel_name": "random", "message_count": 89}
-]
-```
-
-**Example 3: Get specific channel info**
-```
-Input: {"action": "get_channel_info", "channel_id": "123..."}
-Output: {
-  "channel_name": "general",
-  "last_messages": [...],
-  "total_messages": 150
-}
-```
-
-##### Security Considerations
-- Tool is disabled by default (`enable_tool: false`)
-- Admin-only configuration (only accessible via web UI settings)
-- Source metadata helps LM Studio understand context and trust level of results
-- Search scope limits prevent accidental access to restricted channels
 
 ---
 

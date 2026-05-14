@@ -236,6 +236,10 @@
                         <div class="channel-list" id="allowedChannelList">
                             <div class="channel-list-placeholder">No allowed channels configured</div>
                         </div>
+                        <!-- Channel Search Filter -->
+                        <div class="channel-search-row" id="allowedChannelSearchRow" style="display:none;">
+                            <input type="text" class="channel-search-input" id="allowedChannelSearch" placeholder="🔍 Filter channels by name, ID, or category..." oninput="filterChannelList('allowed')">
+                        </div>
                     </div>
 
                     <!-- Denied Channels -->
@@ -247,6 +251,10 @@
                         </div>
                         <div class="channel-list" id="deniedChannelList">
                             <div class="channel-list-placeholder">No denied channels configured</div>
+                        </div>
+                        <!-- Channel Search Filter -->
+                        <div class="channel-search-row" id="deniedChannelSearchRow" style="display:none;">
+                            <input type="text" class="channel-search-input" id="deniedChannelSearch" placeholder="🔍 Filter channels by name, ID, or category..." oninput="filterChannelList('denied')">
                         </div>
                     </div>
 

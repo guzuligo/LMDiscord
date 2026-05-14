@@ -163,25 +163,56 @@ _No issues marked as won't fix._
 |-------|-------|
 | **ID** | BUG-004 |
 | **Date** | 2026-05-14 |
-| **Status** | 🔄 In Progress |
+| **Status** | ✅ Solved |
 | **Severity** | High |
 | **Description** | The bot processes messages from all channels despite denied_channels being configured in config.json. Debug logs show `allowed_channels=[]` and `denied_channels=[]` for the active server. |
-| **Root Cause** | **Server ID Mismatch**: The server ID in config.json (`1502926835862864000`) does NOT match the actual Discord guild ID (`1502926835862863944`). The last few digits differ. The bot looks up the config using the actual guild ID from the message, finds no matching entry, and uses the default config (enabled, all channels allowed). |
-| **Log Evidence** | Config saved for: `1502926835862864000` | Bot processing guild: `1502926835862863944` |
-| **Debug Logging Added** | 1. `bot_core.py`: Added detailed channel filter debug logging showing guild_id, channel_id, allowed_channels, denied_channels, and is_channel_allowed result 2. `discord_api.py`: Added config save/verify logging and channel API request logging |
-| **Fix Required** | User must update the server ID in `config.json` to match the actual Discord guild ID. The "Load Servers from Discord" button should be used to discover the correct server ID automatically. |
-| **Files Modified** | `src/discord_bot/bot_core.py` (added debug logging), `src/discord_api.py` (added config save/verify logging, channel API logging) |
+| **Root Cause** | **Server ID Mismatch**: The server ID in config.json (`1502926835862864000`) did NOT match the actual Discord guild ID (`1502926835862863944`). The last 3 digits differed (000 vs 944). The bot looks up the config using the actual guild ID from the message, finds no matching entry, and uses the default config (enabled, all channels allowed). |
+| **Fix Applied** | Updated `config.json` server ID from `1502926835862864000` to `1502926835862863944` to match the actual Discord guild ID. |
+| **Files Modified** | `config.json` (server ID corrected), `src/discord_bot/bot_core.py` (added debug logging), `src/discord_api.py` (added config save/verify logging, channel API logging) |
 
 ---
 
-### 🆕 Discord Channel Search Tool (Planned)
+### 🆕 BUG-005: Server Config Changes Not Applied to Running Bot (Stale Config Reference)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-005 |
+| **Date** | 2026-05-14 |
+| **Status** | ✅ Solved |
+| **Severity** | High |
+| **Description** | Server/channel config changes saved to disk via the web UI were not reflected in bot behavior. The bot continued showing `allowed_channels=[]` and `denied_channels=[]` even after saving config. |
+| **Root Cause** | The Discord bot holds a stale `Config` instance from startup. When the API saves config, it creates a **new** `Config()` instance, saves to disk, and returns. The bot's `_config` is never updated with the new data. |
+| **Fix Applied** | After saving config in `update_server_config()`, `add_channel_to_server()`, and `remove_channel_from_server()` endpoints, the bot instance's `_config` is now replaced with a fresh `Config()` instance that reloads from disk. |
+| **Files Modified** | `src/discord_api.py` → `update_server_config()`, `add_channel_to_server()`, `remove_channel_from_server()` |
+
+---
+
+### 🆕 BUG-006: Auto-Discover Returns Wrong Server ID (JavaScript Integer Precision Loss)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-006 |
+| **Date** | 2026-05-14 |
+| **Status** | ✅ Solved |
+| **Severity** | Critical |
+| **Description** | The "Load Servers from Discord" feature returned server IDs with corrupted last digits (e.g., `1502926835862863944` became `1502926835862864000`). This caused the server config save to use the wrong ID, so channel filters never worked. |
+| **Root Cause** | Discord snowflake IDs are 19 digits, exceeding JavaScript's `MAX_SAFE_INTEGER` (16 digits). The `get_guilds_info()` method returned guild IDs as **integers**, which get corrupted when passed through JSON → JavaScript → backend. Channel IDs were already correctly returned as strings. |
+| **Fix Applied** | Changed `get_guilds_info()` to return `str(guild.id)` instead of `guild.id`, matching how channel IDs are handled in `get_guild_channels()`. |
+| **Files Modified** | `src/discord_bot/bot_core.py` → `get_guilds_info()` method |
+
+---
+
+### 🆕 Discord Channel Search Tool (Server Config UI Filter) - FEAT-002
 
 | Field | Value |
 |-------|-------|
 | **ID** | FEAT-002 |
 | **Date** | 2026-05-13 |
-| **Status** | ⏳ Planned |
-| **Description** | A tool that allows LM Studio to search through Discord channel messages for context. Actions: search, list_channels, get_channel_info, search_by_user. |
+| **Status** | ✅ Solved |
+| **Date Solved** | 2026-05-14 |
+| **Description** | Add search/filter functionality to the Server Config tab's channel lists so users can quickly find and identify channels when configuring allowed/denied channels. |
+| **Solution** | 1. Added search input fields above both Allowed and Denied channel lists in the Server Config tab 2. Real-time filtering matches against channel name, ID, and category 3. Search rows only appear when channels are loaded from Discord 4. Non-matching channels are hidden, matching ones remain visible 5. Filter clears automatically when search input is emptied |
+| **Files Modified** | `src/templates/index.html` (added search input fields), `src/static/minimal.css` (added search input styles), `src/static/lib/server-config.js` (added filterChannelList() function, updated renderChannelList() to store metadata in data attributes, updated loadDiscordChannels() to show search rows) |
 
 ---
 
