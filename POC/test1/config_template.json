@@ -14,7 +14,14 @@
     "max_response_length": 2000,
     "temperature": 0.7,
     "max_tokens": 2500,
-    "enabled_tools": ["math_calc", "image_describe"]
+    "enabled_tools": ["math_calc", "image_describe"],
+    "suppress_werkzeug_logging": false,
+    "message_delay": 5,
+    "system_prompt": "You are a helpful assistant in a Discord server.",
+    "allowed_image_hostnames": [
+      "cdn.discordapp.com",
+      "media.discordapp.net"
+    ]
   },
-  "channels": {}
+  "servers": {}
 }
