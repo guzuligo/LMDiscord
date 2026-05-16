@@ -329,6 +329,7 @@ class DiscordBot:
                     self._pending_messages[channel_id] = []
                 author_name = message.author.name
                 author_display = message.author.display_name
+                author_nick = message.author.nick
                 message_content = (message.content or "").strip()
                 session_user = self._session_manager.get_user(channel_id)
                 if author_name == session_user:
@@ -336,10 +337,11 @@ class DiscordBot:
                 else:
                     formatted_content = f"{author_display} says: {message_content}"
                 
-                # Include attachment info in queued message
+                # Include attachment info and identity in queued message
                 pending_data = {
                     "author_name": author_name,
                     "author_display": author_display,
+                    "author_nick": author_nick,
                     "content": message_content,
                     "formatted_content": formatted_content,
                     "image_attachments": image_attachments
@@ -353,6 +355,8 @@ class DiscordBot:
 
         author_name = message.author.name
         author_display = message.author.display_name
+        author_nick = message.author.nick  # Per-server nickname (can be None)
+        user_id = str(message.author.id)
         message_content = (message.content or "").strip()
 
         # Check for mention or reply
@@ -381,6 +385,7 @@ class DiscordBot:
                     channel_id=channel_id,
                     author_name=author_name,
                     author_display=author_display,
+                    author_nick=author_nick,
                     processing_lock=self._processing_lock,
                     pending_messages=self._pending_messages,
                     handler_callback=self._process_active_session_batch,
@@ -401,14 +406,37 @@ class DiscordBot:
             asyncio.create_task(
                 self._handle_new_session_message(
                     message, actual_content, "mention", channel_id, author_name,
+                    author_display, author_nick, user_id,
                     image_attachments=image_attachments
                 )
             )
 
     # --- Message Handling Delegation ---
 
+    def _get_display_name_for_user(
+        self, author_nick: Optional[str], author_display: str, author_name: str
+    ) -> str:
+        """Get the best name to use when addressing this user.
+
+        Priority: per-server nickname > display name > username.
+
+        Args:
+            author_nick: Per-server nickname (can be None)
+            author_display: Global display name
+            author_name: Discord username (stable)
+
+        Returns:
+            The best name to address this user by
+        """
+        if author_nick:
+            return author_nick
+        if author_display and author_display != author_name:
+            return author_display
+        return author_name
+
     async def _handle_new_session_message(
         self, message, content, message_type, channel_id, author_name,
+        author_display: str, author_nick: Optional[str], user_id: str,
         image_attachments: Optional[List[Dict]] = None
     ) -> None:
         """Handle a new session message.
@@ -418,19 +446,27 @@ class DiscordBot:
             content: Message content
             message_type: 'mention' or 'reply'
             channel_id: Discord channel ID
-            author_name: Author's username
+            author_name: Author's Discord username (stable identifier)
+            author_display: Author's Discord display name (can be changed)
+            author_nick: Author's per-server nickname (can be None, server-specific)
+            user_id: Author's Discord user ID (immutable unique identifier)
             image_attachments: List of image attachment dicts
         """
         self._processing_lock[channel_id] = True
         try:
-            author_display = message.author.display_name
-            user_id = str(message.author.id)
-            logger.info(f"[{message_type}] @{author_name} (display: {author_display}, id: {user_id}): {content[:50]}...")
+            logger.info(f"[{message_type}] @{author_name} (display: {author_display}, "
+                       f"nick: {author_nick or '(none)'}, id: {user_id}): {content[:50]}...")
             if image_attachments:
                 logger.info(f"  Message has {len(image_attachments)} image attachment(s)")
 
-            # Start session
-            self._session_manager.start_session(channel_id, author_name)
+            # Start session with full identity info for memory tracking
+            self._session_manager.start_session(
+                channel_id, author_name,
+                user_id=user_id,
+                author_display=author_display,
+                initial_nick=author_nick,
+                guild_id=str(message.guild.id) if message.guild else "dm"
+            )
 
             # Handle via message handler
             await self._message_handler.handle_new_session(
@@ -440,6 +476,7 @@ class DiscordBot:
                 channel_id=channel_id,
                 author_name=author_name,
                 author_display=author_display,
+                author_nick=author_nick,
                 user_id=user_id,
                 conversation_history=self._conversation_history,
                 typing_callback=self._typing_indicator.show,
@@ -457,7 +494,7 @@ class DiscordBot:
 
     async def _process_active_session_batch(
         self, message, content, channel_id, author_name,
-        author_display, pending_messages,
+        author_display, author_nick, pending_messages,
         image_attachments: Optional[List[Dict]] = None
     ) -> None:
         """Process active session message batch.
@@ -466,8 +503,9 @@ class DiscordBot:
             message: Discord message object
             content: Main message content
             channel_id: Discord channel ID
-            author_name: Author's username
-            author_display: Author's display name
+            author_name: Author's Discord username
+            author_display: Author's Discord display name
+            author_nick: Author's current per-server nickname (can be None)
             pending_messages: List of pending message dicts
             image_attachments: List of image attachment dicts
         """
@@ -475,8 +513,14 @@ class DiscordBot:
             # Update session activity
             self._session_manager.update_activity(channel_id)
 
-            # Get session user
-            session_user = self._session_manager.get_user(channel_id) or author_name
+            # Get session info for identity tracking
+            session_info = self._session_manager.get_session(channel_id) or {}
+            initial_nick = session_info.get("initial_nick")
+            session_user = session_info.get("author_name") or author_name
+
+            # Determine if nickname has changed since session start
+            nick_changed = author_nick and initial_nick and author_nick != initial_nick
+            display_changed = author_display != session_info.get("initial_display", author_display)
 
             # Handle via message handler
             result = await self._message_handler.handle_active_session_batch(
@@ -485,12 +529,16 @@ class DiscordBot:
                 channel_id=channel_id,
                 author_name=author_name,
                 author_display=author_display,
+                author_nick=author_nick,
+                initial_nick=initial_nick,
                 session_user=session_user,
                 pending_messages=pending_messages,
                 conversation_history=self._conversation_history,
                 typing_callback=self._typing_indicator.show,
                 on_message_callback=self._on_message_callback,
-                image_attachments=image_attachments
+                image_attachments=image_attachments,
+                nick_changed=nick_changed,
+                display_changed=display_changed
             )
             # result is a dict with 'usage' and 'should_end_session' keys
             usage = result.get("usage") if isinstance(result, dict) else None
@@ -550,6 +598,7 @@ class DiscordBot:
             channel_id,
             first_pending["author_name"],
             first_pending["author_display"],
+            first_pending.get("author_nick"),
             pending[1:],
             image_attachments=queued_attachments
         )

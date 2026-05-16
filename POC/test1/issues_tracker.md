@@ -359,19 +359,26 @@ _No issues marked as won't fix._
 
 ## Open Issues
 
-### BUG-003: Bot Cannot Identify Discord Users (No User Identity in Context)
+_No open issues._
+
+---
+
+## Recent Fixes
+
+### BUG-003: Bot Cannot Identify Discord Users (No User Identity in Context) - 2026-05-14
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-003 |
 | **Date** | 2026-05-13 |
-| **Status** | 🔄 In Progress |
+| **Status** | ✅ Solved |
 | **Severity** | High |
-| **Description** | The bot has no knowledge of who is talking to it. When asked "What is my name?" the bot responds "I don't know your name." This is because Discord user identity information (username, display name, user ID) is never communicated to the LM Studio. |
-| **Log Evidence** | ```2026-05-13 12:33:28,469 - Turn 1: content='What is your name?...``` → ```2026-05-13 12:33:30,430 - Turn 1: content='\n\nMy name is BotGuzu.'``` (bot confuses its own name with user's name) |
-| **Root Cause** | 1. `author_name` and `author_display` are extracted in `bot_core.py` but never passed to `handle_new_session()` in `message_handler.py` 2. The system prompt does not include any user identity information 3. The first user message in conversation history has no author attribution |
-| **Fix Applied** | 1. Added `author_display` and `user_id` parameters to `handle_new_session()` method signature 2. Added identity context to system prompt that explains Discord identifiers (username, display name, user ID) and instructs LM Studio to remember the user 3. Added author attribution prefix to first user message (e.g., `[From user 'guzu']: hello`) 4. Updated `_handle_new_session_message()` in `bot_core.py` to extract and pass `author_display` and `user_id` |
-| **Files Modified** | `src/discord_bot/message_handler.py` (handle_new_session method), `src/discord_bot/bot_core.py` (_handle_new_session_message method) |
+| **Description** | The bot had no knowledge of who is talking to it. When asked "What is my name?" the bot responded "I don't know your name." This is because Discord user identity information was never fully communicated to the LM Studio. |
+| **Root Cause** | 1. `author_name` and `author_display` were extracted but `author_nick` (per-server nickname) was never extracted 2. The system prompt had partial identity info but no nickname 3. First user message had basic attribution but no nickname context 4. SessionManager didn't store identity data for memory integration |
+| **Fix Applied** | **Phase 1 (P0):** 1. Extract `author_nick = message.author.nick` in `bot_core.py` 2. Pass `author_nick` through entire call chain: `_handle_on_message` → `_handle_new_session_message` → `_process_active_session_batch` → `MessageHandler` methods 3. Added `_get_display_name_for_user()` helper (priority: nick > display > username) 4. Updated system prompt with full identity context including per-server nickname explanation 5. Updated message attribution format to include nickname: `[From guzu (nickname: Picatchu)]: hello` 6. Active session messages show nickname changes: `[guzu (was: Guzu, now: Picatchu)]: I changed my name` **Phase 2 (P1):** 7. Extended `SessionManager.start_session()` to accept `user_id`, `author_display`, `initial_nick`, `guild_id` 8. Added `_session_data` dict storing full identity context per channel 9. Added `get_session()` method returning full identity data for memory integration |
+| **Identity Model** | ``` user_id (immutable) ──────────────────┐                                     │ author_name (stable) ────────────────  │  Primary identifiers for session tracking per_server_nick (per-guild) ──────┘  → Used when addressing user in chat ``` **Addressing Priority:** nick > display_name > username **Memory Key:** user_id (immutable) **Per-Server:** Each server can have different nicknames for same user |
+| **Files Modified** | `src/discord_bot/bot_core.py` (extract nick, pass through chain, helper method, session init), `src/discord_bot/message_handler.py` (accept nick params, update system prompt, update attribution), `src/discord_bot/session_manager.py` (store initial nick + guild_id, add get_session method) |
+| **Memory Integration Prep** | SessionManager now stores: `{user_id, author_name, initial_display, initial_nick, current_display, current_nick, guild_id}` per channel. This enables future memory module to: (1) Key by immutable user_id, (2) Track display/nick name history, (3) Store per-server identity separately |
 
 ---
 
