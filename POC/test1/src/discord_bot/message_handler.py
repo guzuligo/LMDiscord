@@ -14,8 +14,11 @@ import asyncio
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from asyncio import Lock
 
 import aiohttp
 import discord
@@ -167,7 +170,8 @@ class MessageHandler:
         tools: Optional[List[Dict[str, Any]]] = None,
         executor: Optional[ThreadPoolExecutor] = None,
         tool_executor_instance: Optional[ToolExecutor] = None,
-        allowed_image_hostnames: Optional[List[str]] = None
+        allowed_image_hostnames: Optional[List[str]] = None,
+        lm_studio_lock: Optional["Lock"] = None
     ):
         """Initialize message handler.
 
@@ -181,6 +185,7 @@ class MessageHandler:
             executor: Thread pool executor for blocking calls
             tool_executor_instance: Optional ToolExecutor instance with registered tools
             allowed_image_hostnames: List of allowed hostnames for image downloads
+            lm_studio_lock: Global asyncio.Lock to serialize LM Studio API calls
         """
         self.lm_studio_client = lm_studio_client
         self.system_prompt = system_prompt
@@ -189,6 +194,7 @@ class MessageHandler:
         self.use_tool_calling = use_tool_calling
         self._tools = tools or [self.END_SESSION_TOOL]
         self._executor = executor or ThreadPoolExecutor(max_workers=2)
+        self._lm_studio_lock = lm_studio_lock
         
         # Set up tool executor (for executing tool calls from LM Studio)
         self._tool_executor = tool_executor_instance
@@ -235,6 +241,43 @@ class MessageHandler:
             tool_def = tool_instance.to_dict()
             if tool_def not in self._tools:
                 self._tools.append(tool_def)
+
+    async def _call_lm_studio(self, api_call_func, *args, channel_id: Optional[int] = None) -> Dict:
+        """Call LM Studio API with global lock to prevent concurrent requests.
+        
+        This ensures only one LM Studio API call is in progress at a time,
+        preventing OOM errors on the LM Studio server.
+        
+        Args:
+            api_call_func: The synchronous API function to call
+            *args: Arguments to pass to the API function
+            channel_id: Optional channel ID for logging
+            
+        Returns:
+            LM Studio API response dict
+        """
+        channel_info = f" (channel {channel_id})" if channel_id else ""
+        
+        if self._lm_studio_lock is not None:
+            # Acquire global lock before making API call
+            logger.info(f"Waiting for LM Studio lock{channel_info}")
+            async with self._lm_studio_lock:
+                logger.info(f"Acquired LM Studio lock{channel_info}, calling API")
+                result = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    api_call_func,
+                    *args
+                )
+                logger.info(f"Released LM Studio lock{channel_info}")
+                return result
+        else:
+            # Fallback: no lock available, call directly
+            logger.warning(f"No LM Studio lock available{channel_info}, calling API directly")
+            return await asyncio.get_event_loop().run_in_executor(
+                self._executor,
+                api_call_func,
+                *args
+            )
 
     # --- New Session Message Handling ---
 
@@ -522,24 +565,24 @@ class MessageHandler:
                 if turn > 0:
                     await typing_callback(channel)
 
-                # Call LM Studio
+                # Call LM Studio (serialized via global lock)
                 if self.use_tool_calling:
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        self._executor,
+                    response = await self._call_lm_studio(
                         self.lm_studio_client.chat_with_tools,
                         messages_for_lm,
                         self.tools,
                         self.temperature,
-                        self.max_tokens
+                        self.max_tokens,
+                        channel_id=channel_id
                     )
                 else:
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        self._executor,
+                    response = await self._call_lm_studio(
                         lambda: self.lm_studio_client.chat(
                             messages=messages_for_lm,
                             temperature=self.temperature,
                             max_tokens=self.max_tokens
-                        )
+                        ),
+                        channel_id=channel_id
                     )
 
                 # Extract usage data
@@ -630,12 +673,12 @@ class MessageHandler:
                                 
                                 # Get description using mini-context (no conversation history)
                                 logger.info(f"[Fix 2c] Using isolated mini-context for image description")
-                                mini_response = await asyncio.get_event_loop().run_in_executor(
-                                    self._executor,
+                                mini_response = await self._call_lm_studio(
                                     self.lm_studio_client.chat,
                                     mini_context,
                                     self.temperature,
-                                    self.max_tokens
+                                    self.max_tokens,
+                                    channel_id=channel_id
                                 )
                                 
                                 # Extract description from response
@@ -775,23 +818,24 @@ class MessageHandler:
                 if turn > 0:
                     await typing_callback(message.channel)
 
+                # Call LM Studio (serialized via global lock)
                 if self.use_tool_calling:
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        self._executor,
+                    response = await self._call_lm_studio(
                         self.lm_studio_client.chat_with_tools,
                         messages_for_lm,
                         self.tools,
                         self.temperature,
-                        self.max_tokens
+                        self.max_tokens,
+                        channel_id=channel_id
                     )
                 else:
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        self._executor,
+                    response = await self._call_lm_studio(
                         lambda: self.lm_studio_client.chat(
                             messages=messages_for_lm,
                             temperature=self.temperature,
                             max_tokens=self.max_tokens
-                        )
+                        ),
+                        channel_id=channel_id
                     )
 
                 turn_usage = response.get("usage")
@@ -876,12 +920,12 @@ class MessageHandler:
                                 
                                 # Get description using mini-context (no conversation history)
                                 logger.info(f"[Fix 2c] Using isolated mini-context for image description (active session)")
-                                mini_response = await asyncio.get_event_loop().run_in_executor(
-                                    self._executor,
+                                mini_response = await self._call_lm_studio(
                                     self.lm_studio_client.chat,
                                     mini_context,
                                     self.temperature,
-                                    self.max_tokens
+                                    self.max_tokens,
+                                    channel_id=channel_id
                                 )
                                 
                                 # Extract description from response
