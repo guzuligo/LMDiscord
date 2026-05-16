@@ -153,6 +153,46 @@ Switched from tkinter GUI to Flask web app due to tkinter unavailability on Fedo
 | Generic error responses | ✅ Done | All error handlers return "⚠️ Sorry, I encountered an error processing your message." |
 | Traceback protection | ✅ Done | Error tracebacks logged server-side only, never sent to Discord |
 
+## BUG-003: Discord User Identity Tracking (5/14/2026)
+
+### Problem
+- Bot had no knowledge of who is talking to it
+- When asked "What is my name?" the bot responded "I don't know your name"
+- Per-server nicknames were never extracted or communicated to LM Studio
+
+### Solution
+- Extracted `author_nick = message.author.nick` (per-server nickname)
+- Extended identity tracking through entire call chain
+- Updated system prompt with full identity context (username, display, nickname, user ID)
+- Extended SessionManager to store identity data for memory integration
+
+### Identity Model
+```
+user_id (immutable) ──────────────────┐
+                                      │
+author_name (stable) ────────────────  │  Primary identifiers for session tracking
+per_server_nick (per-guild) ────────  │  → Used when addressing user in chat
+display_name (global, changeable) ───┘
+```
+
+**Addressing Priority:** nick > display_name > username
+**Memory Key:** user_id (immutable)
+**Per-Server:** Each server can have different nicknames for same user
+
+### Attribution Examples
+- **New session:** `[From guzu (nickname: Picatchu, display: Guzu)]: hello`
+- **Session with nick change:** `[guzu (was: Guzu, now: Picatchu)]: I changed my name`
+- **Different user in channel:** `Picatchu (guzu) says: I'm here too`
+
+### New/Modified Files
+| File | Changes |
+|------|---------|
+| `src/discord_bot/bot_core.py` | Extract `author_nick`, pass through call chain, add `_get_display_name_for_user()` helper, extend session start with identity data |
+| `src/discord_bot/message_handler.py` | Accept `author_nick`/`initial_nick` params, update system prompt with identity context, update message attribution format |
+| `src/discord_bot/session_manager.py` | Add `_session_data` dict, extend `start_session()` with identity fields, add `get_session()` method |
+
+---
+
 ## Known Issues (Pending Fix)
 
 ### ISS-005: Werkzeug HTTP 200 Log Spam

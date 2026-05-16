@@ -246,6 +246,7 @@ class MessageHandler:
         channel_id: int,
         author_name: str,
         author_display: str = "",
+        author_nick: Optional[str] = None,
         user_id: str = "",
         conversation_history: Dict[int, List[Dict[str, str]]] = None,
         typing_callback: Callable = None,
@@ -260,7 +261,8 @@ class MessageHandler:
             message_type: 'mention' or 'reply'
             channel_id: Discord channel ID
             author_name: Author's Discord username (stable identifier)
-            author_display: Author's Discord display name (may change)
+            author_display: Author's Discord display name (can be changed)
+            author_nick: Author's per-server nickname (can be None, server-specific)
             user_id: Author's Discord user ID (immutable unique identifier)
             conversation_history: Dict of channel_id -> message history
             typing_callback: Async callback to show typing indicator
@@ -269,17 +271,31 @@ class MessageHandler:
         """
         channel = message.channel
 
-        # Build system prompt with user identity context
+        # Build system prompt with full user identity context
+        # This enables the LLM to know how to address the user and track identity changes
         identity_context = ""
         if user_id or author_name:
-            identity_parts = [f"\n\nYou are in a Discord server. The person you are talking to has the following Discord identity information:"]
-            identity_parts.append(f"- **Discord username** (stable identifier): `{author_name}`")
-            if author_display and author_display != author_name:
-                identity_parts.append(f"- **Discord display name** (can be changed by the user): `{author_display}`")
+            identity_parts = []
+            identity_parts.append("\n\nYou are in a Discord server. The person you are talking to has the following Discord identity information:")
+            identity_parts.append(f"\n- **Discord username** (stable, global identifier): `{author_name}`")
+            
+            if author_nick:
+                identity_parts.append(f"\n- **Per-server nickname** (server-specific, can be different per server): `{author_nick}`")
+                identity_parts.append("\n  → Use this nickname when addressing this user. Nicknames are server-specific — the same person may have different nicknames in different servers.")
+            elif author_display and author_display != author_name:
+                identity_parts.append(f"\n- **Display name** (global, can be changed by the user): `{author_display}`")
+            else:
+                identity_parts.append(f"\n- **Display name** (same as username): `{author_display or author_name}`")
+            
             if user_id:
-                identity_parts.append(f"- **Discord user ID** (unique, immutable identifier): `{user_id}`")
-            identity_parts.append("\n**Important:** These are Discord identifiers, NOT real-world names. The username and user ID are stable ways to identify this user. The display name may change over time.")
-            identity_parts.append("\nIf the user shares their real name or personal information during the conversation, you can associate it with their Discord username (`{author_name}`) for future reference in this session.".format(author_name=author_name))
+                identity_parts.append(f"\n- **Discord user ID** (unique, immutable, cannot change): `{user_id}`")
+            
+            identity_parts.append("\n**Important guidelines:**")
+            identity_parts.append("1. These are Discord identifiers, NOT real-world names.")
+            identity_parts.append("2. The user ID is the most stable way to identify this user across time.")
+            identity_parts.append("3. The nickname or display name may change — use the current one when addressing them.")
+            identity_parts.append("4. If the user shares their real name or personal info, associate it with their Discord username for this session.")
+            identity_parts.append("5. The same user may have different nicknames in different servers — treat each server identity as separate.")
             identity_context = "\n".join(identity_parts)
 
         system_prompt = self.system_prompt + (
@@ -312,12 +328,24 @@ class MessageHandler:
                 "content": system_prompt
             })
 
-        # Add user message
+        # Add user message with full identity attribution
+        # Include all identity info so the LLM sees the complete picture from the start
         full_content = content
-        # Include author attribution in the first user message for additional context
-        if author_display and author_display != author_name:
-            full_content = f"[From user '{author_name}' (display: '{author_display}')]: {content}"
+        if author_nick and author_nick != author_name:
+            # Has per-server nickname — include all identity layers
+            full_content = (
+                f"[From user '{author_name}' "
+                f"(nickname: '{author_nick}', "
+                f"display: '{author_display}')]: {content}"
+            )
+        elif author_display and author_display != author_name:
+            # No nickname, but display differs from username
+            full_content = (
+                f"[From user '{author_name}' "
+                f"(display: '{author_display}')]: {content}"
+            )
         elif author_name:
+            # Minimal attribution
             full_content = f"[From user '{author_name}']: {content}"
         conversation_history[channel_id].append({
             "role": "user",
@@ -343,12 +371,16 @@ class MessageHandler:
         channel_id: int,
         author_name: str,
         author_display: str,
+        author_nick: Optional[str],
+        initial_nick: Optional[str],
         session_user: str,
         pending_messages: List[Dict[str, str]],
         conversation_history: Dict[int, List[Dict[str, str]]],
         typing_callback: Callable,
         on_message_callback: Optional[Callable] = None,
-        image_attachments: Optional[List[Dict]] = None
+        image_attachments: Optional[List[Dict]] = None,
+        nick_changed: bool = False,
+        display_changed: bool = False
     ) -> None:
         """Handle batched messages during an active session.
 
@@ -356,25 +388,58 @@ class MessageHandler:
             message: Discord message object
             content: Main message content
             channel_id: Discord channel ID
-            author_name: Author's username
-            author_display: Author's display name
+            author_name: Author's Discord username (stable)
+            author_display: Author's current Discord display name
+            author_nick: Author's current per-server nickname (can be None)
+            initial_nick: Nickname at session start (for change detection)
             session_user: User who started the session
             pending_messages: List of queued message dicts
             conversation_history: Dict of channel_id -> message history
             typing_callback: Async callback to show typing indicator
             on_message_callback: Optional callback for GUI updates
-            image_attachments: List of image attachment dicts with url, filename
+            image_attachments: List of image attachment dicts
+            nick_changed: Whether the nickname has changed since session start
+            display_changed: Whether the display name has changed since session start
         """
         # Skip empty messages
         if not content or not content.strip():
             logger.info(f"Skipping empty message for channel {channel_id}")
             return
 
-        # Format main message
+        # Format main message with identity attribution
+        # Include nickname change info when the user has changed their nickname during the session
         if author_name == session_user:
-            formatted_content = content
+            # Same user as session starter — include identity context
+            if nick_changed and initial_nick:
+                # Nickname changed — inform the LLM
+                nick_now = author_nick if author_nick else "(none)"
+                formatted_content = (
+                    f"[{author_name} (was: {initial_nick}, now: {nick_now})]: {content}"
+                )
+            elif author_nick and author_nick != author_name:
+                # Has nickname — include it
+                formatted_content = (
+                    f"[{author_name} (nickname: {author_nick})]: {content}"
+                )
+            elif author_display and author_display != author_name:
+                # No nickname but display differs
+                formatted_content = (
+                    f"[{author_name} (display: {author_display})]: {content}"
+                )
+            else:
+                formatted_content = content
         else:
-            formatted_content = f"{author_display} says: {content}"
+            # Different user in the same channel — include identity
+            if author_nick and author_nick != author_name:
+                formatted_content = (
+                    f"{author_nick} ({author_name}) says: {content}"
+                )
+            elif author_display and author_display != author_name:
+                formatted_content = (
+                    f"{author_display} ({author_name}) says: {content}"
+                )
+            else:
+                formatted_content = f"{author_display} says: {content}"
         
         # If there are image attachments, include their info
         if image_attachments:
