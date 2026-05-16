@@ -93,9 +93,48 @@ Switched from tkinter GUI to Flask web app due to tkinter unavailability on Fedo
 15. ✅ Add show_typing tool for Discord typing indicator - DONE
 16. ✅ Modular refactoring (app.py → app.py, chat_api.py, discord_api.py) - DONE
 17. ✅ Token metrics streaming with real-time display - DONE
-18. ⏳ Add tools system (math, image description)
+18. ✅ Add tools system (math, image description) - COMPLETED
 19. ⏳ Add memory integration
 20. ⏳ Add channel configuration window
+
+## Recent Fixes (5/16/2026)
+
+### ISS-019: DelayProcessor Parameter Mismatch (Solved)
+- **Status**: ✅ Solved
+- **Symptom**: `TypeError: DelayProcessor.process_active_session_with_delay() got an unexpected keyword argument 'author_nick'`
+- **Root Cause**: `bot_core.py` was passing `author_nick=author_nick` to `process_active_session_with_delay()`, but the method signature only accepts `author_name` and `author_display`
+- **Fix**: Removed `author_nick=author_nick` from the call in `bot_core.py` line 388
+- **Files Modified**: `src/discord_bot/bot_core.py`
+
+### ISS-020: Global LM Studio Lock to Prevent Concurrent Requests / OOM (Implemented)
+- **Status**: ✅ Implemented
+- **Problem**: When messages arrive in two different channels simultaneously, both get submitted to the thread pool and call LM Studio concurrently, potentially causing OOM errors
+- **Solution**: Added `asyncio.Lock()` in `bot_core.py` that serializes all LM Studio API calls
+- **Implementation**:
+  1. Added `self._lm_studio_lock = asyncio.Lock()` to `DiscordBot.__init__()`
+  2. Added `lm_studio_lock` parameter to `MessageHandler.__init__()`
+  3. Added `_call_lm_studio()` helper method that acquires the global lock before each API call
+  4. Wrapped all 6 LM Studio API call sites with `_call_lm_studio()`:
+     - `_process_message`: tool calling, non-tool calling, mini-context image description
+     - `_process_active_session`: tool calling, non-tool calling, mini-context image description
+  5. Added logging: "Waiting for LM Studio lock", "Acquired LM Studio lock", "Released LM Studio lock"
+- **Files Modified**: `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py`
+- **Verification**: Logs confirm channel 1502926836970291232 acquires lock first, channel 1503498074851508476 waits and acquires after release
+
+### ISS-021: DelayProcessor Handler Callback Signature Mismatch (Solved)
+- **Status**: ✅ Solved
+- **Symptom**: `TypeError: DiscordBot._process_active_session_batch() missing 1 required positional argument: 'pending_messages'`
+- **Root Cause**: `delay_processor.py` passed `pending` as the 6th positional argument, but `_process_active_session_batch` expects `pending_messages` as the 7th positional arg (after `author_nick`)
+- **Fix**: Changed call to pass `None` for `author_nick` and `pending_messages=pending` as keyword arg
+- **Files Modified**: `src/discord_bot/delay_processor.py`
+
+### Configuration Updates (5/16/2026)
+- **Status**: ✅ Completed
+- **Changes**:
+  1. `allowed_image_hostnames` defaults set to `["cdn.discordapp.com", "media.discordapp.net"]` in all config files
+  2. `message_delay` default set to 5 in all config files
+  3. `config_template.json` updated with missing settings (`suppress_werkzeug_logging`, `message_delay`, `system_prompt`, `allowed_image_hostnames`, `servers`)
+- **Files Modified**: `src/config.py`, `config.json`, `config_template.json`
 
 ## Logging System Implementation (Added 5/11/2026)
 | Component | Status | Notes |

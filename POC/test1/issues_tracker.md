@@ -607,6 +607,36 @@ _No open issues._
 
 ---
 
+### Issue #14: DelayProcessor Parameter Mismatch (ISS-019) - 2026-05-16
+- **Problem**: `TypeError: DelayProcessor.process_active_session_with_delay() got an unexpected keyword argument 'author_nick'`
+- **Root Cause**: `bot_core.py` was passing `author_nick=author_nick` to `process_active_session_with_delay()`, but the method signature only accepts `author_name` and `author_display`
+- **Fix**: Removed `author_nick=author_nick` from the call in `bot_core.py` line 388
+- **Code Location**: `src/discord_bot/bot_core.py` → `_handle_on_message()`, `src/discord_bot/delay_processor.py` → `process_active_session_with_delay()`
+
+---
+
+### Issue #15: Concurrent LM Studio Requests Causing OOM Risk (ISS-020) - 2026-05-16
+- **Problem**: When messages arrive in two different channels simultaneously, both get submitted to the thread pool and call LM Studio concurrently, potentially causing OOM errors on the LM Studio server
+- **Solution**: Added global `asyncio.Lock()` that serializes all LM Studio API calls
+- **Implementation**:
+  1. Added `self._lm_studio_lock = asyncio.Lock()` to `DiscordBot.__init__()`
+  2. Added `lm_studio_lock` parameter to `MessageHandler.__init__()`
+  3. Added `_call_lm_studio()` helper method that acquires the global lock before each API call
+  4. Wrapped all 6 LM Studio API call sites with `_call_lm_studio()`
+  5. Added logging: "Waiting for LM Studio lock", "Acquired LM Studio lock", "Released LM Studio lock"
+- **Verification**: Logs confirm channels are serialized — first channel acquires lock, second waits and acquires after release
+- **Code Location**: `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py`
+
+---
+
+### Issue #16: DelayProcessor Handler Callback Signature Mismatch (ISS-021) - 2026-05-16
+- **Problem**: `TypeError: DiscordBot._process_active_session_batch() missing 1 required positional argument: 'pending_messages'`
+- **Root Cause**: `delay_processor.py` passed `pending` as the 6th positional argument, but `_process_active_session_batch` expects `pending_messages` as the 7th positional arg (after `author_nick`)
+- **Fix**: Changed call to pass `None` for `author_nick` and `pending_messages=pending` as keyword arg
+- **Code Location**: `src/discord_bot/delay_processor.py` → `process_active_session_with_delay()`
+
+---
+
 ### Issue #6: Infinite `show_typing` Tool Calling Loop (ISS-006) - 2026-05-11
 - **Problem**: LM Studio entered infinite loop calling `show_typing` tool
 - **Fix**: Removed `show_typing` from LM Studio tools, made typing indicator deterministic after configurable delay

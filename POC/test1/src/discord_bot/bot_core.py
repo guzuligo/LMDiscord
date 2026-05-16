@@ -79,6 +79,8 @@ class DiscordBot:
 
         # Create sub-modules
         self._executor = ThreadPoolExecutor(max_workers=2)
+        # Global lock to serialize LM Studio API calls and prevent OOM
+        self._lm_studio_lock = asyncio.Lock()
         self._session_manager = SessionManager(timeout_seconds=600)
         self._token_tracker = TokenTracker()
         self._typing_indicator = TypingIndicator()
@@ -106,7 +108,8 @@ class DiscordBot:
             use_tool_calling=use_tool_calling,
             tools=self._tool_definitions,
             executor=self._executor,
-            allowed_image_hostnames=allowed_hostnames
+            allowed_image_hostnames=allowed_hostnames,
+            lm_studio_lock=self._lm_studio_lock
         )
 
         # Discord client setup
@@ -385,7 +388,6 @@ class DiscordBot:
                     channel_id=channel_id,
                     author_name=author_name,
                     author_display=author_display,
-                    author_nick=author_nick,
                     processing_lock=self._processing_lock,
                     pending_messages=self._pending_messages,
                     handler_callback=self._process_active_session_batch,

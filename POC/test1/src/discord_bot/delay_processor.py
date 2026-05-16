@@ -135,7 +135,8 @@ class DelayProcessor:
             
             await handler_callback(
                 message, content, channel_id, author_name, author_display,
-                pending, image_attachments=merged_attachments if merged_attachments else None
+                None, pending_messages=pending,
+                image_attachments=merged_attachments if merged_attachments else None
             )
 
         except Exception as e:
