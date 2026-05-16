@@ -51,8 +51,9 @@ class ImageDescribeTool(BaseTool):
     def description(self) -> str:
         return (
             "Process an image and return it in a format suitable for vision analysis. "
-            "Use this when the user wants an image described. The tool returns base64-encoded "
-            "image data that can be sent to a vision model."
+            "Use this when the user wants an image described. "
+            "The image_data parameter accepts either a URL (e.g., Discord CDN link) or "
+            "Base64-encoded image data. URLs will be automatically downloaded and processed."
         )
 
     @property
@@ -62,11 +63,11 @@ class ImageDescribeTool(BaseTool):
             "properties": {
                 "image_data": {
                     "type": "string",
-                    "description": "Base64-encoded image data (without data: URL prefix)"
+                    "description": "URL of the image (e.g., Discord CDN link) or Base64-encoded image data (without data: URL prefix). URLs will be automatically downloaded."
                 },
                 "mime_type": {
                     "type": "string",
-                    "description": "MIME type of the image (e.g., image/png, image/jpeg)"
+                    "description": "MIME type of the image (e.g., image/png, image/jpeg). Can be inferred from URL."
                 }
             },
             "required": ["image_data", "mime_type"]

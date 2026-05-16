@@ -94,8 +94,14 @@ Switched from tkinter GUI to Flask web app due to tkinter unavailability on Fedo
 16. ✅ Modular refactoring (app.py → app.py, chat_api.py, discord_api.py) - DONE
 17. ✅ Token metrics streaming with real-time display - DONE
 18. ✅ Add tools system (math, image description) - COMPLETED
-19. ⏳ Add memory integration
-20. ⏳ Add channel configuration window
+19. ✅ message_handler.py modular refactoring (1025 → 6 files, all under 400) - DONE
+20. ✅ bot_core.py modular refactoring (844 → split with delay_processor) - DONE
+21. ✅ Fix image_describe tool not called by model (reasoning timeout) - DONE
+22. ✅ Fix SessionManager.sessions attribute error in app.py - DONE
+23. ✅ Fix image_describe channel_id duplicate kwarg bug - DONE
+24. ⏳ JavaScript/HTML/CSS refactoring (server-config.js, script.js, debug_script.js)
+25. ⏳ Add memory integration
+26. ⏳ Add channel configuration window
 
 ## Recent Fixes (5/16/2026)
 

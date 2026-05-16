@@ -641,3 +641,101 @@ _No open issues._
 - **Problem**: LM Studio entered infinite loop calling `show_typing` tool
 - **Fix**: Removed `show_typing` from LM Studio tools, made typing indicator deterministic after configurable delay
 - **New Feature**: Configurable message delay (1-30 seconds) via web UI
+
+---
+
+### BUG-007: image_describe Tool Not Called by LM Studio Model (Model Reasoning Timeout)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-007 |
+| **Date** | 2026-05-16 |
+| **Status** | ✅ Solved |
+| **Severity** | Critical |
+| **Date Solved** | 2026-05-16 |
+| **Symptom** | When user sent an image with "What do you see?", LM Studio hit max_tokens (2500) during reasoning, returned empty response with no tool calls. LM Studio logs showed the model was still writing its internal reasoning when it ran out of tokens. |
+| **Log Evidence** | ```"finish_reason": "length"``` and ```"content": "", "tool_calls": []``` in LM Studio response. Token usage: 3479 total (979 prompt + 2500 completion = all tokens used for reasoning). |
+| **Root Cause** | The `image_describe` tool definition told the model `image_data` must be "Base64-encoded image data", but the model only had a URL. This caused an infinite reasoning loop as the model debated whether it could produce Base64 from a URL, burning all 2500 tokens on reasoning without making the tool call. |
+| **Fix Applied** | 1. Updated `src/tools/builtins/image_describe.py` tool description: "The image_data parameter accepts either a URL (e.g., Discord CDN link) or Base64-encoded image data. URLs will be automatically downloaded and processed." 2. Updated `image_data` parameter description: "URL of the image (e.g., Discord CDN link) or Base64-encoded image data (without data: URL prefix). URLs will be automatically downloaded." 3. Updated `mime_type` parameter description: "MIME type of the image (e.g., image/png, image/jpeg). Can be inferred from URL." 4. Updated system prompt in `message_handler.py`: "Pass the image URL directly to this tool — it will be automatically downloaded and processed." |
+| **Verification** | Full pipeline working — model calls `image_describe` with URL → image downloaded from Discord CDN → resized → mini-context LM Studio call describes it → bot responds with description identifying "Kate from The Little Prince". |
+| **Files Modified** | `src/tools/builtins/image_describe.py`, `src/discord_bot/message_handler.py` |
+
+---
+
+### BUG-008: Debug Panel Sessions API Error (SessionManager.sessions Attribute Missing)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-008 |
+| **Date** | 2026-05-16 |
+| **Status** | ✅ Solved |
+| **Severity** | Medium |
+| **Date Solved** | 2026-05-16 |
+| **Symptom** | Debug panel repeatedly logged `'SessionManager' object has no attribute 'sessions'` error every 2 seconds when polling for session data. |
+| **Log Evidence** | ```ERROR app Error getting sessions: 'SessionManager' object has no attribute 'sessions'``` |
+| **Root Cause** | After `discord_bot.py` was modular refactored into `src/discord_bot/` package, `SessionManager` no longer had a public `sessions` attribute. It uses `_active_sessions`, `_session_users`, and `_session_data` internally with public methods like `get_session()`, `get_active_channels()`, etc. The `app.py` endpoints still referenced `_bot._session_manager.sessions.get(channel_id)` and `list(_bot._session_manager.sessions.keys())`. |
+| **Fix Applied** | 1. `get_sessions()` endpoint: Changed `_bot._session_manager.sessions.get(channel_id)` to `_bot._session_manager.get_session(channel_id)` which returns a dict with keys `author_name`, `started_at`, etc. Updated attribute access to use dict keys. 2. `clear_all_sessions()` endpoint: Changed `list(_bot._session_manager.sessions.keys())` to `_bot._session_manager.get_active_channels()`. |
+| **Files Modified** | `src/app.py` → `get_sessions()`, `clear_all_sessions()` |
+
+---
+
+### BUG-009: image_describe channel_id Duplicate Keyword Argument
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-009 |
+| **Date** | 2026-05-16 |
+| **Status** | ✅ Solved |
+| **Severity** | High |
+| **Date Solved** | 2026-05-16 |
+| **Symptom** | `TypeError: got multiple values for keyword argument 'channel_id'` when LM Studio called `image_describe` tool. |
+| **Root Cause** | In `message_processor.py`, lambda wrappers passed `channel_id=None` explicitly: `lambda ctx, **kw: self._lm_caller.call(ctx, channel_id=None, **kw)`. Meanwhile, `tool_executor.py` line 319 also passed `channel_id=None` via `make_lm_call_func(mini_context, channel_id=None, use_tool_calling=False)`. This caused `channel_id=None` to be passed twice to `LMCaller.call()`. |
+| **Fix Applied** | Removed explicit `channel_id=None` from both lambda wrappers in `message_processor.py` (lines 140 and 244). The `LMCaller.call()` method already defaults `channel_id` properly, and `tool_executor.py` passes `channel_id=None` when needed — no duplication. |
+| **Files Modified** | `src/discord_bot/message_processor.py` |
+
+---
+
+### ISS-022: Modular Refactoring of message_handler.py (1025 lines → 6 files, all under 400)
+
+| Field | Value |
+|-------|-------|
+| **ID** | ISS-022 |
+| **Date** | 2026-05-16 |
+| **Status** | ✅ Solved |
+| **Severity** | Low (maintenance improvement) |
+| **Date Solved** | 2026-05-16 |
+| **Problem** | `message_handler.py` was 1025 lines, making it difficult to maintain, debug, and understand. |
+| **Solution** | Split into 6 focused modules under `src/discord_bot/` package with single-responsibility design. |
+| **New File Structure** | ``` src/discord_bot/ ├── message_handler.py      (~303 lines) - Main handler class, orchestrates new/active sessions ├── message_processor.py    (~310 lines) - Core LM Studio session processing, multi-turn tool calling ├── tool_executor.py        (~345 lines) - Tool call handling (end_session, image_describe) ├── user_identity.py        (~128 lines) - User identity context building and message formatting ├── image_downloader.py     (~123 lines) - Safe image download with hostname whitelist └── lm_caller.py            (~123 lines) - LM Studio API caller with lock serialization ``` |
+| **Benefits** | Each file under 400 lines, single responsibility, easier to test and maintain. |
+| **Files Created** | `src/discord_bot/message_processor.py`, `src/discord_bot/tool_executor.py`, `src/discord_bot/user_identity.py`, `src/discord_bot/image_downloader.py`, `src/discord_bot/lm_caller.py` |
+| **Files Modified** | `src/discord_bot/message_handler.py` (reduced from 1025 to 303 lines) |
+
+---
+
+### ISS-023: Modular Refactoring of bot_core.py (844 lines → split with delay_processor)
+
+| Field | Value |
+|-------|-------|
+| **ID** | ISS-023 |
+| **Date** | 2026-05-16 |
+| **Status** | ✅ Solved |
+| **Severity** | Low (maintenance improvement) |
+| **Date Solved** | 2026-05-16 |
+| **Problem** | `bot_core.py` was 844 lines. |
+| **Solution** | Delay processing was already in separate `delay_processor.py` module. bot_core.py reduced to ~520 lines. |
+| **Files Modified** | `src/discord_bot/bot_core.py` (reduced from 844 to ~520 lines), `src/discord_bot/delay_processor.py` (~110 lines) |
+
+---
+
+### ISS-024: JavaScript/HTML/CSS Refactoring Needed
+
+| Field | Value |
+|-------|-------|
+| **ID** | ISS-024 |
+| **Date** | 2026-05-16 |
+| **Status** | ⏳ Planned |
+| **Severity** | Low (maintenance improvement) |
+| **Description** | Several frontend files exceed the 400-line target for maintainability. |
+| **Files to Refactor** | `src/static/server-config.js` (634 lines), `src/static/script.js` (533 lines), `src/static/debug_script.js` (468 lines) |
+| **Target** | All files under 400 lines |

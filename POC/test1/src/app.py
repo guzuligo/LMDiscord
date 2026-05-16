@@ -455,27 +455,29 @@ def get_sessions():
             if isinstance(channels, dict):
                 for channel_id, history_length in channels.items():
                     # Get session data from session manager
-                    session = _bot._session_manager.sessions.get(channel_id)
-                    if session:
+                    session_data = _bot._session_manager.get_session(channel_id)
+                    if session_data:
+                        started_at = session_data.get("started_at")
                         sessions.append({
                             "channel_id": channel_id,
-                            "user": session.user,
-                            "created_at": session.created_at.strftime("%Y-%m-%d %H:%M:%S") if session.created_at else "unknown",
-                            "last_activity": session.last_activity.strftime("%Y-%m-%d %H:%M:%S") if session.last_activity else "unknown",
-                            "message_count": session.message_count,
+                            "user": session_data.get("author_name", "unknown"),
+                            "created_at": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "last_activity": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "message_count": 0,
                             "history_length": history_length
                         })
             elif isinstance(channels, list):
                 # channels is a list of channel IDs
                 for channel_id in channels:
-                    session = _bot._session_manager.sessions.get(channel_id)
-                    if session:
+                    session_data = _bot._session_manager.get_session(channel_id)
+                    if session_data:
+                        started_at = session_data.get("started_at")
                         sessions.append({
                             "channel_id": channel_id,
-                            "user": session.user,
-                            "created_at": session.created_at.strftime("%Y-%m-%d %H:%M:%S") if session.created_at else "unknown",
-                            "last_activity": session.last_activity.strftime("%Y-%m-%d %H:%M:%S") if session.last_activity else "unknown",
-                            "message_count": session.message_count,
+                            "user": session_data.get("author_name", "unknown"),
+                            "created_at": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "last_activity": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "message_count": 0,
                             "history_length": 0
                         })
         
@@ -540,7 +542,7 @@ def clear_all_sessions():
     
     try:
         # Get all active channel IDs
-        channels = list(_bot._session_manager.sessions.keys())
+        channels = _bot._session_manager.get_active_channels()
         cleared_count = 0
         
         for channel_id in channels:
