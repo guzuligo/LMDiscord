@@ -1,0 +1,197 @@
+/* LM Studio Instances UI Styling */
+
+/* Instance cards grid */
+.lm-instances-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+/* Single instance card */
+.lm-instance-card {
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 12px;
+    background: #1e1e2e;
+    position: relative;
+}
+
+.lm-instance-card.active {
+    border-color: #a6e3a1;
+    box-shadow: 0 0 8px rgba(166, 227, 161, 0.3);
+}
+
+/* Card header */
+.lm-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.lm-card-header h4 {
+    margin: 0;
+    font-size: 14px;
+    color: #cdd6f4;
+}
+
+.lm-card-header .lm-instance-id {
+    font-size: 11px;
+    color: #6c7086;
+    font-family: monospace;
+}
+
+/* Connection status badge */
+.lm-status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: bold;
+}
+
+.lm-status-badge.connected {
+    background: #a6e3a1;
+    color: #1e1e2e;
+}
+
+.lm-status-badge.disconnected {
+    background: #f38ba8;
+    color: #1e1e2e;
+}
+
+/* Card body */
+.lm-card-body {
+    font-size: 12px;
+    color: #a6adc8;
+    margin-bottom: 8px;
+}
+
+.lm-card-body .lm-host-port {
+    font-family: monospace;
+    color: #89b4fa;
+}
+
+/* Model selector */
+.lm-model-selector {
+    margin: 8px 0;
+}
+
+.lm-model-selector label {
+    display: block;
+    font-size: 11px;
+    color: #6c7086;
+    margin-bottom: 4px;
+}
+
+.lm-model-selector select {
+    width: 100%;
+    padding: 4px 8px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+/* Card actions */
+.lm-card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.lm-card-actions button {
+    padding: 4px 10px;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    background: #313244;
+    color: #cdd6f4;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.lm-card-actions button:hover {
+    background: #45475a;
+}
+
+.lm-card-actions .lm-activate-btn {
+    background: #a6e3a1;
+    color: #1e1e2e;
+    border-color: #a6e3a1;
+}
+
+.lm-card-actions .lm-activate-btn:hover {
+    background: #94e2d5;
+}
+
+/* Add instance form */
+.lm-add-form {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    padding: 12px;
+    background: #181825;
+    border-radius: 6px;
+    margin-bottom: 12px;
+}
+
+.lm-add-form .lm-form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.lm-add-form .lm-form-field label {
+    font-size: 11px;
+    color: #6c7086;
+}
+
+.lm-add-form input {
+    padding: 6px 10px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-size: 12px;
+    width: 140px;
+}
+
+.lm-add-form input:focus {
+    outline: none;
+    border-color: #89b4fa;
+}
+
+.lm-add-form button {
+    padding: 6px 14px;
+    background: #89b4fa;
+    color: #1e1e2e;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.lm-add-form button:hover {
+    background: #74c7ec;
+}
+
+/* Status messages */
+.lm-status-msg {
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+.lm-status-msg.success {
+    background: rgba(166, 227, 161, 0.15);
+    color: #a6e3a1;
+}
+
+.lm-status-msg.error {
+    background: rgba(243, 139, 168, 0.15);
+    color: #f38ba8;
+}

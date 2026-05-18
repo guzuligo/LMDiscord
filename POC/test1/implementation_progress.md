@@ -103,6 +103,158 @@ Switched from tkinter GUI to Flask web app due to tkinter unavailability on Fedo
 25. ⏳ Add memory integration
 26. ⏳ Add channel configuration window
 
+## FEAT-006: LM Studio Multi-Instance Management (2026-05-18)
+
+### Problem
+- No way to manage multiple LM Studio instances
+- No UI to select which model to use
+- Model selection only available via code/config
+
+### Solution
+- Created `src/lm_models/` package with data models, instance manager, and Flask API
+- Added model dropdown to model info bar (appears when connected)
+- Added "🧠 LM Instances" tab for multi-instance management
+- Full CRUD for instances: add, remove, activate, test/discover models
+
+### New Files Created
+| File | Lines | Purpose |
+|------|-------|---------|
+| `src/lm_models/__init__.py` | ~10 | Package init |
+| `src/lm_models/models.py` | ~88 | `ModelInfo`, `LmInstanceConfig`, `LmInstance` dataclasses |
+| `src/lm_models/manager.py` | ~283 | `InstanceManager` with CRUD, model discovery, model selection |
+| `src/lm_models/api.py` | ~194 | Flask Blueprint with 11 API endpoints |
+| `src/static/lm-instances.css` | ~197 | Instance card styling |
+| `src/static/lib/lm-instances.js` | ~200 | Instance management UI logic |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `src/app.py` | Added `init_instance_manager()`, `lm_bp` blueprint, registered LM endpoints |
+| `src/lm_studio_client.py` | Added `switch_instance()`, `selected_model` property, `chat_with_tools_stream()` |
+| `src/config.py` | Added `lm_instances` and `active_instance` support |
+| `src/templates/index.html` | Added model dropdown, LM Instances tab, linked CSS/JS |
+| `src/static/script.js` | Added `updateModelSelect()`, `selectModel()`, LM instance state tracking |
+
+### API Endpoints
+- `GET /api/lm_instances` - List all instances
+- `POST /api/lm_instances` - Add instance
+- `GET/DELETE /api/lm_instances/<id>` - Get/remove instance
+- `POST /api/lm_instances/<id>/activate` - Activate instance
+- `POST /api/lm_instances/<id>/discover` - Discover models
+- `GET/POST /api/lm_instances/<id>/select_model` - Model selection
+- `GET/POST /api/lm_instances/active/model` - Active model management
+
+### Bugs Fixed During Implementation
+1. Config path: `parent.parent.parent` → `parent.parent`
+2. Manager `_load()` didn't create default instance
+3. API path mismatch: `/api/lm/...` vs `/api/lm_instances`
+4. Field name mismatch: `connected` vs `is_connected`
+5. Duplicate DOM ID: `lm-instances-tab` on both button and content
+
+### Verification
+- Backend API returns 1 instance with 15 discovered models
+- UI tested and verified working by user
+
+## Image Tools Fixes & New Feature (5/18/2026)
+
+### Known Bugs (Not Yet Fixed)
+
+#### BUG-007: max_tokens Retry Loop Exits Early
+- **Status**: 🔄 Known, Will Fix Later
+- **Problem**: The max_tokens retry logic in `message_processor.py` has a `break` statement that exits the loop instead of `continue`, preventing the retry with increased max_tokens from ever executing.
+- **Evidence**: Logs show `Turn 2: content=''` with `completion_tokens: 2500` (hit max_tokens limit), `finish_reason: "length"`
+- **Fix Required**: Change `break` to `continue` in `_process_session()` and `process_active_session()` methods
+- **File**: `src/discord_bot/message_processor.py`
+
+#### BUG-008: image_compare Fails on Same-Attachment URLs
+- **Status**: 🔄 Known, Will Fix Later
+- **Problem**: When user provides two URLs pointing to the same Discord attachment (one with query params, one without), the second URL fails to download.
+- **Evidence**: Both URLs had same attachment ID `1505963986271731844`. Discord CDN returns `text/plain` even with Referer header retry.
+- **Workaround**: Users should re-upload the second image if comparing different images.
+
+---
+
+### FIX-003: Empty Response After Tool Processing (max_tokens Overflow)
+- **Status**: ✅ Implemented
+- **Problem**: After tool processing (image_describe, image_compare), LM Studio returns empty content on Turn 2 with exactly 2500 completion tokens — hit max_tokens limit
+- **Root Cause**: Tool result message + conversation history exceeds context window; LM Studio uses all tokens on reasoning/context
+- **Solution**:
+  1. Added `_execute_lm_call()` with `max_tokens_override` parameter
+  2. When Turn N returns empty content after tool processing, auto-retry with `max_tokens * 2` (capped at 8192)
+  3. Added warning message appended to context suggesting to increase max_tokens
+  4. If retry also empty → OOM detection → user-friendly error message
+  5. Added `_is_oom_error()` helper to detect OOM in exception strings
+  6. Applied to both `_process_session()` and `process_active_session()`
+- **Files Modified**: `src/discord_bot/message_processor.py`
+
+### FIX-004: image_compare Discord CDN URL Retry (text/plain Content-Type)
+- **Status**: ✅ Implemented
+- **Problem**: Second image URL fails with "Blocked: disallowed content type 'text/plain'" — Discord CDN returns redirect page
+- **Root Cause**: Discord CDN URLs with `?ex=...&is=...` params are temporary redirects without proper headers
+- **Solution**: Added `_download_image_with_retry()` static method — on content-type error, retries with `Referer: https://discord.com/` header. Graceful fallback: proceeds with available images + failure note
+- **Files Modified**: `src/tools/builtins/image_compare.py`
+
+---
+
+### FIX-001: Enhanced Tool Result Message to Prevent LM Studio Re-calling image_describe
+- **Status**: ✅ Implemented
+- **Problem**: After mini-context correctly describes an image, Turn 2 of the main conversation returns `content=''` with a tool call, causing LM Studio to re-call image_describe
+- **Root Cause**: Tool result message was too weak: "The image has been described. Here's what was in the image: [description]. Please continue the conversation naturally, incorporating this information."
+- **Fix**: Changed to explicit, authoritative message: "IMAGE DESCRIPTION COMPLETE: [description]. You now have full information about this image. DO NOT call image_describe again for this image. Respond to the user's question using this description."
+- **Files Modified**: `src/discord_bot/tool_executor.py` → `_handle_image_describe()` and `_handle_image_describe_active()` (both variants)
+
+### FIX-002: Handle URL Strings Passed as image_data Parameter
+- **Status**: ✅ Implemented
+- **Problem**: When LM Studio calls image_describe with a URL string instead of base64 data, the tool should detect and auto-download
+- **Fix**: Added `_handle_image_data()` helper method that:
+  1. Detects if image_data starts with "http" (URL string)
+  2. Downloads via SafeImageDownloader if URL
+  3. Detects MIME type from content bytes
+  4. Resizes and converts to base64
+  5. Returns (base64_data, mime_type) tuple
+- **Files Modified**: `src/discord_bot/tool_executor.py` → new `_handle_image_data()` method
+
+### FEAT-007: New image_compare Tool for Multi-Image Comparison
+- **Status**: ✅ Implemented
+- **Description**: Tool that accepts 2-3 image URLs, downloads each, describes via mini-context, then generates structured comparison
+- **New Files Created**:
+  | File | Lines | Purpose |
+  |------|-------|---------|
+  | `src/tools/builtins/image_compare.py` | ~220 | ImageCompareTool class with async comparison via mini-context |
+- **Files Modified**:
+  | File | Changes |
+  |------|---------|
+  | `src/tools/builtins/__init__.py` | Added ImageCompareTool export |
+  | `src/discord_bot/bot_core.py` | Added ImageCompareTool import and registration |
+  | `src/discord_bot/tool_executor.py` | Added `_handle_image_compare()` and `_handle_image_compare_active()` methods |
+  | `src/discord_bot/message_handler.py` | Updated system prompt with image_compare tool description and re-call prevention |
+- **Features**:
+  - Accepts `image_urls` array (2-3 items) and optional `comparison_prompt`
+  - Downloads all images via SafeImageDownloader
+  - Describes each image via isolated mini-context (no conversation history)
+  - Combines descriptions into structured comparison prompt
+  - Returns formatted comparison covering: similarities, differences, key elements, patterns
+- **Tool Definition**:
+  ```json
+  {
+    "type": "function",
+    "function": {
+      "name": "image_compare",
+      "description": "Compare up to 3 images side by side...",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "image_urls": {"type": "array", "minItems": 2, "maxItems": 3},
+          "comparison_prompt": {"type": "string"}
+        },
+        "required": ["image_urls"]
+      }
+    }
+  }
+  ```
+
+---
+
 ## Recent Fixes (5/16/2026)
 
 ### ISS-019: DelayProcessor Parameter Mismatch (Solved)

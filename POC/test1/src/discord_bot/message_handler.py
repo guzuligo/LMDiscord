@@ -170,9 +170,11 @@ class MessageHandler:
             "Only respond when the message appears to be directed at you.\n\n"
             "You have access to tools:\n"
             "- 'image_describe': Call this ONLY when the user explicitly asks for an image to be described, analyzed, or identified. Pass the image URL directly to this tool — it will be automatically downloaded and processed.\n"
+            "- 'image_compare': Call this when the user wants to compare 2-3 images side by side. Pass image URLs as an array. Optionally include a comparison_prompt for specific comparison focus.\n"
             "- If the user sends an image but does NOT explicitly ask for it to be described, respond naturally about the image in text.\n"
             "- 'end_session': Call this when the conversation is ending and you want to say goodbye\n\n"
             "IMPORTANT: Do not call image_describe for every image. Only call it when the user clearly wants a detailed description.\n"
+            "IMPORTANT: After calling image_describe, you will receive the description in the tool result. DO NOT call image_describe again for the same image. Use the description to respond.\n"
         )
 
         # Include image attachment info in content

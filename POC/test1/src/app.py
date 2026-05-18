@@ -17,6 +17,7 @@ from src.config import Config
 from src.lm_studio_client import LMStudioClient
 from src.logger import logger, LogLevel
 from src.chat_api import register_chat_blueprints
+from src.lm_models.api import init_instance_manager, register_lm_blueprints
 # Import the discord_api module to access its attributes dynamically.
 # We import the module (not individual variables) because bot_core.py updates
 # discord_connected/discord_bot_instance directly as module attributes.
@@ -590,19 +591,29 @@ def get_debug_token_metrics():
         }), 500
 
 
+# ==================== LM Instance Manager Initialization ====================
+
+# Initialize the LM instance manager with config path
+# Path: src/app.py → src/ → test1/ → config.json
+_config_path = str(Path(__file__).parent.parent / "config.json")
+init_instance_manager(_config_path)
+
 # ==================== Blueprint Registration ====================
 
 # Create blueprints for modular routing
 chat_bp = Blueprint("chat", __name__)
 discord_bp = Blueprint("discord", __name__)
+lm_bp = Blueprint("lm", __name__)
 
 # Register endpoint modules
 register_chat_blueprints(chat_bp, client, config)
 register_discord_blueprints(discord_bp)
+register_lm_blueprints(lm_bp)
 
 # Register blueprints with main app
 app.register_blueprint(chat_bp)
 app.register_blueprint(discord_bp)
+app.register_blueprint(lm_bp)
 
 
 if __name__ == "__main__":

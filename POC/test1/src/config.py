@@ -341,3 +341,23 @@ class Config:
             del servers[server_id]
             self._data["servers"] = servers
             self.save()
+
+    # ====================================================================
+    # LM Instance Integration (FEAT-006)
+    # ====================================================================
+
+    @property
+    def lm_model(self) -> str:
+        """Get the selected model name (backward compat, reads from lm_instances active)."""
+        active_lm = self._data.get("lm_instances", {}).get(
+            self._data.get("active_instance", "local"), {}
+        )
+        return active_lm.get("selected_model", "")
+
+    @lm_model.setter
+    def lm_model(self, value: str) -> None:
+        """Set the selected model name on the active instance."""
+        active_id = self._data.get("active_instance", "local")
+        if active_id in self._data.get("lm_instances", {}):
+            self._data["lm_instances"][active_id]["selected_model"] = value
+            self.save()

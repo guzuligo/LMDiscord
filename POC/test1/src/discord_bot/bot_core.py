@@ -35,6 +35,7 @@ from src.discord_bot.message_handler import MessageHandler
 # Import tools
 from src.tools.registry import ToolRegistry
 from src.tools.builtins.image_describe import ImageDescribeTool
+from src.tools.builtins.image_compare import ImageCompareTool
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -88,7 +89,9 @@ class DiscordBot:
         # Set up tool registry and register built-in tools
         self._tool_registry = ToolRegistry()
         self._image_describe_tool = ImageDescribeTool()
+        self._image_compare_tool = ImageCompareTool()
         self._tool_registry.register(self._image_describe_tool)
+        self._tool_registry.register(self._image_compare_tool)
         
         # Get tool definitions for LM Studio
         self._tool_definitions = self._tool_registry.get_all_definitions()

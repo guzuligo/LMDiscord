@@ -739,3 +739,168 @@ _No open issues._
 | **Description** | Several frontend files exceed the 400-line target for maintainability. |
 | **Files to Refactor** | `src/static/server-config.js` (634 lines), `src/static/script.js` (533 lines), `src/static/debug_script.js` (468 lines) |
 | **Target** | All files under 400 lines |
+
+---
+
+### 🆕 FEAT-006: LM Studio Multi-Instance Management
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-006 |
+| **Date** | 2026-05-18 |
+| **Status** | ✅ Complete & Verified |
+| **Description** | Allow managing multiple LM Studio instances and selecting models per instance. Model selection dropdown appears in the model info bar after connecting to LM Studio. A new "🧠 LM Instances" tab provides full multi-instance management. |
+
+#### Implementation Details
+
+**New Files Created:**
+| File | Lines | Purpose |
+|------|-------|---------|
+| `src/lm_models/__init__.py` | ~10 | Package init |
+| `src/lm_models/models.py` | ~88 | Data classes: `ModelInfo`, `LmInstanceConfig`, `LmInstance` |
+| `src/lm_models/manager.py` | ~283 | `InstanceManager` - CRUD operations, model discovery, model selection, config persistence |
+| `src/lm_models/api.py` | ~194 | Flask Blueprint with endpoints: list, add, get, delete, activate, discover, select model |
+| `src/static/lm-instances.css` | ~197 | Styling for instance cards, add form, status messages |
+| `src/static/lib/lm-instances.js` | ~200 | Frontend JS: load instances, add/remove/activate instances, model selection per instance |
+
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `src/app.py` | Added `init_instance_manager()` call, created `lm_bp` blueprint, registered LM endpoints |
+| `src/lm_studio_client.py` | Added `switch_instance()` method, `selected_model` property, `chat_with_tools_stream()` for tool calling with streaming |
+| `src/config.py` | Added `lm_instances` and `active_instance` to config template |
+| `src/templates/index.html` | Added model dropdown to model info bar, added "🧠 LM Instances" tab with instance management UI, linked CSS/JS assets |
+| `src/static/script.js` | Added `updateModelSelect()`, `selectModel()`, state tracking for LM hostname/port, tab switching for LM Instances |
+
+**API Endpoints Added:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/lm_instances` | GET | List all LM Studio instances |
+| `/api/lm_instances` | POST | Add a new instance |
+| `/api/lm_instances/<id>` | GET | Get a specific instance |
+| `/api/lm_instances/<id>` | DELETE | Remove an instance |
+| `/api/lm_instances/<id>/activate` | POST | Activate an instance |
+| `/api/lm_instances/<id>/discover` | POST | Discover models on an instance |
+| `/api/lm_instances/<id>/models` | GET | Get models for an instance |
+| `/api/lm_instances/<id>/select_model` | POST | Select a model for an instance |
+| `/api/lm_instances/active` | GET | Get active instance |
+| `/api/lm_instances/active/model` | GET | Get active model |
+| `/api/lm_instances/active/model` | POST | Set active model |
+
+**Known Bugs Fixed During Implementation:**
+1. Config path was wrong (`parent.parent.parent` → `parent.parent`)
+2. Manager `_load()` didn't create default instance when config had no `lm_instances` section
+3. Frontend API paths used `/api/lm/...` but backend used `/api/lm_instances` (underscore)
+4. Frontend checked `inst.connected` but backend returns `inst.is_connected`
+5. Tab button and tab content both had `id="lm-instances-tab"` causing DOM conflict → fixed to `lm-instances-btn` and `lm-instances-content`
+
+**Verification:**
+- `curl /api/lm_instances` → Returns 1 instance ("Local LM Studio") with 15 discovered models
+- `curl -X POST /api/lm_instances/local/discover` → Found 15 models on localhost:1234
+- UI tested and verified working by user
+
+---
+
+### 🆕 FIX-001: Enhanced Tool Result Message to Prevent LM Studio Re-calling image_describe
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-001 |
+| **Date** | 2026-05-18 |
+| **Status** | ✅ Implemented |
+| **Severity** | High |
+| **Description** | After mini-context correctly describes an image, Turn 2 of the main conversation returns `content=''` with a tool call, causing LM Studio to re-call image_describe and get stuck in a loop. |
+| **Root Cause** | Tool result message was too weak: "The image has been described. Here's what was in the image: [description]. Please continue the conversation naturally..." — LM Studio didn't realize it already had the description. |
+| **Fix Applied** | Changed to: "IMAGE DESCRIPTION COMPLETE: [description]. You now have full information about this image. DO NOT call image_describe again for this image. Respond to the user's question using this description." |
+| **Files Modified** | `src/discord_bot/tool_executor.py` → `_handle_image_describe()` and `_handle_image_describe_active()` |
+
+---
+
+### 🆕 FIX-002: Handle URL Strings Passed as image_data Parameter
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-002 |
+| **Date** | 2026-05-18 |
+| **Status** | ✅ Implemented |
+| **Severity** | Medium |
+| **Description** | When LM Studio calls image_describe with a URL string instead of base64 data, the tool should detect and auto-download. |
+| **Fix Applied** | Added `_handle_image_data()` helper method that detects URL vs base64, downloads via SafeImageDownloader if URL, detects MIME type, resizes, and returns (base64_data, mime_type) tuple. |
+| **Files Modified** | `src/discord_bot/tool_executor.py` → new `_handle_image_data()` method |
+
+---
+
+### 🆕 FEAT-007: New image_compare Tool for Multi-Image Comparison
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-007 |
+| **Date** | 2026-05-18 |
+| **Status** | ✅ Implemented |
+| **Description** | Tool that accepts 2-3 image URLs, downloads each, describes via mini-context, then generates structured comparison. |
+| **New Files** | `src/tools/builtins/image_compare.py` (~280 lines) |
+| **Files Modified** | `src/tools/builtins/__init__.py`, `src/discord_bot/bot_core.py`, `src/discord_bot/tool_executor.py`, `src/discord_bot/message_handler.py` |
+| **Features** | Accepts `image_urls` array (2-3 items) and optional `comparison_prompt`. Downloads all images via SafeImageDownloader with Referer header retry for Discord CDN. Describes each via isolated mini-context. Returns structured comparison. Graceful fallback when some images fail. |
+
+---
+
+### 🆕 FIX-003: Empty Response After Tool Processing (max_tokens Overflow)
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-003 |
+| **Date** | 2026-05-18 |
+| **Status** | ✅ Implemented |
+| **Severity** | High |
+| **Description** | After tool processing (image_describe, image_compare), LM Studio returns empty content on Turn 2. Token usage shows exactly 2500 completion tokens — the response hit max_tokens limit. |
+| **Root Cause** | The tool result message combined with conversation history exceeds the context window. LM Studio uses all available tokens on reasoning/context and returns empty content. |
+| **Fix Applied** | 1. Added `_execute_lm_call()` with `max_tokens_override` parameter 2. When Turn N returns empty content after tool processing, automatically retry with `max_tokens * 2` (capped at 8192) 3. Added warning message in tool result suggesting to increase max_tokens 4. If retry also returns empty → OOM detection → user-friendly error message 5. Added `_is_oom_error()` helper to detect OOM errors in exception messages 6. Applied to both `_process_session()` and `process_active_session()` |
+| **Files Modified** | `src/discord_bot/message_processor.py` → `_process_session()`, `process_active_session()`, `_execute_lm_call()`, new `_is_oom_error()` and `_is_max_tokens_overflow()` methods |
+
+---
+
+### 🆕 FIX-004: image_compare Discord CDN URL Retry (text/plain Content-Type)
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-004 |
+| **Date** | 2026-05-18 |
+| **Status** | ✅ Implemented |
+| **Severity** | Medium |
+| **Description** | Second image URL in image_compare fails with "Blocked: disallowed content type 'text/plain'" because Discord CDN returns a redirect page instead of the actual image. |
+| **Root Cause** | Discord CDN URLs with `?ex=...&is=...` params are temporary redirects. When downloaded without proper headers, they return HTML redirect pages with `text/plain` content type. |
+| **Fix Applied** | 1. Added `_download_image_with_retry()` static method in ImageCompareTool 2. On content-type error, retries with `Referer: https://discord.com/` header 3. If all images fail → user-friendly error 4. If some images fail → proceeds with available images + failure note |
+| **Files Modified** | `src/tools/builtins/image_compare.py` → new `_download_image_with_retry()` method, updated `compare_images_async()` |
+
+---
+
+## Known Bugs (Not Yet Fixed)
+
+### BUG-007: max_tokens Retry Loop Exits Early (break → continue)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-007 |
+| **Date** | 2026-05-18 |
+| **Status** | 🔄 Known, Will Fix Later |
+| **Severity** | High |
+| **Description** | The max_tokens retry logic in `message_processor.py` has a `break` statement that exits the loop instead of `continue`, preventing the retry with increased max_tokens from ever executing. |
+| **Root Cause** | In `_process_session()` and `process_active_session()`, after detecting empty response on Turn N (post-tool-processing), the code appends a warning message to `messages_for_lm` but then uses `break` instead of `continue`. The `break` exits the turn loop immediately, so the next iteration (which would use `max_tokens_override`) never runs. |
+| **Evidence** | Logs show `Turn 2: content=''` with `completion_tokens: 2500` (hit max_tokens limit), `finish_reason: "length"`. The retry logic detected the condition but exited the loop before retrying. |
+| **Fix Required** | Change `break` to `continue` at line ~175 in `_process_session()` and line ~290 in `process_active_session()` in `src/discord_bot/message_processor.py` |
+| **Files to Fix** | `src/discord_bot/message_processor.py` |
+
+---
+
+### BUG-008: image_compare Fails When Both URLs Point to Same Attachment
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-008 |
+| **Date** | 2026-05-18 |
+| **Status** | 🔄 Known, Will Fix Later |
+| **Severity** | Low |
+| **Description** | When user provides two URLs that point to the same Discord attachment (one with query params, one without), the second URL fails to download because Discord CDN returns `text/plain` even with Referer header retry. |
+| **Root Cause** | Discord attachment URLs without auth tokens (`.../image.png`) may be inaccessible if the attachment requires authentication. The Referer header retry also fails because the underlying URL is invalid without tokens. |
+| **Evidence** | Logs show: `Retry also got non-image content type: text/plain` for the second URL. Both URLs had the same attachment ID `1505963986271731844`. |
+| **Workaround** | Users should re-upload the second image if they want to compare two different images. The tool correctly falls back to comparing with available images. |

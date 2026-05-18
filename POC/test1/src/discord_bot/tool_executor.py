@@ -55,6 +55,11 @@ class ToolCallHandler:
                     func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
                 )
                 return result
+            elif func_name == "image_compare":
+                result = await self._handle_image_compare(
+                    func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
+                )
+                return result
             else:
                 tool_result = f"Unknown tool: {func_name}"
                 messages_for_lm.append({
@@ -101,6 +106,10 @@ class ToolCallHandler:
 
             elif func_name == "image_describe":
                 await self._handle_image_describe_active(
+                    func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
+                )
+            elif func_name == "image_compare":
+                await self._handle_image_compare_active(
                     func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
                 )
             else:
@@ -194,7 +203,7 @@ class ToolCallHandler:
                 messages_for_lm.pop()  # Remove assistant message with tool call
                 messages_for_lm.append({
                     "role": "user",
-                    "content": f"The image has been described. Here's what was in the image: {image_description}. Please continue the conversation naturally, incorporating this information."
+                    "content": f"IMAGE DESCRIPTION COMPLETE: {image_description}. You now have full information about this image. DO NOT call image_describe again for this image. Respond to the user's question using this description."
                 })
 
         except ValueError as e:
@@ -263,7 +272,7 @@ class ToolCallHandler:
                 messages_for_lm.pop()  # Remove assistant message with tool call
                 messages_for_lm.append({
                     "role": "user",
-                    "content": f"The image has been described. Here's what was in the image: {image_description}. Please continue the conversation naturally, incorporating this information."
+                    "content": f"IMAGE DESCRIPTION COMPLETE: {image_description}. You now have full information about this image. DO NOT call image_describe again for this image. Respond to the user's question using this description."
                 })
 
         except ValueError as e:
@@ -281,6 +290,55 @@ class ToolCallHandler:
                 "tool_call_id": tool_call_id,
                 "content": f"Error processing image: {str(e)}"
             })
+
+    async def _handle_image_data(self, image_data: str, safe_downloader: Any) -> tuple:
+        """Process image_data which may be either a URL string or base64 data.
+
+        If image_data is a URL (starts with http), downloads it, validates,
+        resizes, and converts to base64. If it's already base64 data, processes it directly.
+
+        Args:
+            image_data: URL string or base64-encoded image data
+            safe_downloader: SafeImageDownloader instance
+
+        Returns:
+            Tuple of (base64_data: str, mime_type: str)
+        """
+        from src.utils import resize_image_bytes, image_to_base64
+
+        # Check if image_data is a URL
+        if image_data.startswith("http"):
+            # Download from URL
+            raw_bytes = await safe_downloader.download_image(image_data)
+            logger.info(f"Downloaded {len(raw_bytes)} bytes from URL")
+
+            # Detect MIME type from content
+            content_type = None
+            if len(raw_bytes) >= 4:
+                sig = raw_bytes[:4]
+                if sig[:2] == b'\xff\xd8':
+                    content_type = "image/jpeg"
+                elif sig[:4] == b'\x89PNG':
+                    content_type = "image/png"
+                elif sig[:4] == b'GIF8':
+                    content_type = "image/gif"
+                elif sig[:4] == b'RIFF' and raw_bytes[8:12] == b'WEBP':
+                    content_type = "image/webp"
+
+            compressed_bytes, output_mime = resize_image_bytes(
+                raw_bytes, max_dimension=768, quality=85
+            )
+            processed_base64 = image_to_base64(compressed_bytes)
+            return processed_base64, output_mime
+        else:
+            # Already base64 data - decode, resize, re-encode
+            import base64
+            raw_bytes = base64.b64decode(image_data)
+            compressed_bytes, output_mime = resize_image_bytes(
+                raw_bytes, max_dimension=768, quality=85
+            )
+            processed_base64 = image_to_base64(compressed_bytes)
+            return processed_base64, output_mime
 
     # --- Helper Methods ---
 
@@ -343,3 +401,117 @@ class ToolCallHandler:
             "or the URL may not be publicly accessible. "
             "Please try using an image from Discord's CDN instead."
         )
+
+    async def _handle_image_compare(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        safe_downloader: Any,
+        make_lm_call_func: Optional[Any] = None
+    ) -> Optional[str]:
+        """Handle image_compare tool call (new session variant).
+
+        Downloads multiple images, describes each via mini-context, then generates
+        a structured comparison.
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            safe_downloader: SafeImageDownloader instance
+            make_lm_call_func: Optional function to make LM calls
+
+        Returns:
+            Comparison text to continue with
+        """
+        try:
+            args = json.loads(func_args)
+            image_urls = args.get("image_urls", [])
+            comparison_prompt = args.get("comparison_prompt", "")
+
+            logger.info(f"[image_compare] Comparing {len(image_urls)} images")
+
+            from src.tools.builtins.image_compare import ImageCompareTool
+            comparison_text = await ImageCompareTool.compare_images_async(
+                image_urls=image_urls,
+                comparison_prompt=comparison_prompt,
+                safe_downloader=safe_downloader,
+                make_lm_call_func=make_lm_call_func
+            )
+
+            messages_for_lm.pop()  # Remove assistant message with tool call
+            messages_for_lm.append({
+                "role": "user",
+                "content": f"IMAGE COMPARISON COMPLETE: {comparison_text}. You now have a full comparison of all images. Respond to the user's question using this comparison."
+            })
+
+        except ValueError as e:
+            logger.warning(f"Image compare blocked: {e}")
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Image comparison blocked: {str(e)}"
+            })
+        except Exception as e:
+            logger.error(f"Error in image_compare: {e}", exc_info=True)
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error during image comparison: {str(e)}"
+            })
+
+        return comparison_text
+
+    async def _handle_image_compare_active(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        safe_downloader: Any,
+        make_lm_call_func: Optional[Any] = None
+    ) -> None:
+        """Handle image_compare tool call (active session variant).
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            safe_downloader: SafeImageDownloader instance
+            make_lm_call_func: Optional function to make LM calls
+        """
+        try:
+            args = json.loads(func_args)
+            image_urls = args.get("image_urls", [])
+            comparison_prompt = args.get("comparison_prompt", "")
+
+            logger.info(f"[image_compare] Comparing {len(image_urls)} images (active session)")
+
+            from src.tools.builtins.image_compare import ImageCompareTool
+            comparison_text = await ImageCompareTool.compare_images_async(
+                image_urls=image_urls,
+                comparison_prompt=comparison_prompt,
+                safe_downloader=safe_downloader,
+                make_lm_call_func=make_lm_call_func
+            )
+
+            messages_for_lm.pop()  # Remove assistant message with tool call
+            messages_for_lm.append({
+                "role": "user",
+                "content": f"IMAGE COMPARISON COMPLETE: {comparison_text}. You now have a full comparison of all images. Respond to the user's question using this comparison."
+            })
+
+        except ValueError as e:
+            logger.warning(f"Image compare blocked: {e}")
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Image comparison blocked: {str(e)}"
+            })
+        except Exception as e:
+            logger.error(f"Error in image_compare: {e}", exc_info=True)
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error during image comparison: {str(e)}"
+            })

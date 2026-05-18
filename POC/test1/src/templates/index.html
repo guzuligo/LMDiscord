@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Discord Bot + LM Studio Chat POC</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='minimal.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='lm-instances.css') }}">
 </head>
 <body>
     <!-- Header -->
@@ -41,7 +42,12 @@
     </div>
 
     <!-- Model info -->
-    <div class="model-info" id="modelInfo">Model: Not connected | Discord Bot: Not connected</div>
+    <div class="model-info" id="modelInfo">
+        <span id="modelInfoText">Model: Not connected | Discord Bot: Not connected</span>
+        <select id="modelSelect" style="display:none; margin-left:10px; padding:2px 6px; background:#313244; color:#cdd6f4; border:1px solid #45475a; border-radius:4px; font-size:12px;" onchange="selectModel(this.value)">
+            <option value="">Select model...</option>
+        </select>
+    </div>
 
     <!-- Tab container -->
     <div class="tab-container">
@@ -50,6 +56,7 @@
             <button class="tab-button active" onclick="switchTab('chat')">💬 Chat</button>
             <button class="tab-button" onclick="switchTab('tokens')">📊 Tokens</button>
             <button class="tab-button" onclick="switchTab('servers')">🔧 Servers</button>
+            <button class="tab-button" id="lm-instances-btn" onclick="switchTab('lm-instances')">🧠 LM Instances</button>
             <button class="tab-button" onclick="switchTab('logs')">📋 Logs <span id="logBadge" style="display:none; background:#f38ba8; color:#1e1e2e; padding:0 4px; border-radius:8px; font-size:10px; margin-left:4px;">0</span></button>
         </div>
         
@@ -268,6 +275,37 @@
             </div>
         </div>
 
+        <!-- LM Instances tab -->
+        <div class="tab-content" id="lm-instances-content">
+            <div class="lm-instances-container" id="lmInstancesContainer">
+                <div class="lm-instances-header">
+                    <h3>🧠 LM Studio Instances</h3>
+                    <p style="color: #6c7086; font-size: 12px;">Manage multiple LM Studio servers and switch between them.</p>
+                </div>
+
+                <!-- Add instance form -->
+                <div class="lm-add-form">
+                    <div class="lm-form-field">
+                        <label>Hostname:</label>
+                        <input type="text" id="lmAddHostname" placeholder="localhost" value="localhost">
+                    </div>
+                    <div class="lm-form-field">
+                        <label>Port:</label>
+                        <input type="number" id="lmAddPort" placeholder="1234" value="1234" min="1" max="65535">
+                    </div>
+                    <button onclick="addLMInstanceFromUI()">➕ Add Instance</button>
+                </div>
+
+                <!-- Instance cards grid -->
+                <div class="lm-instances-grid" id="lm-instances-grid">
+                    <p style="color:#6c7086;font-size:13px;">Loading instances...</p>
+                </div>
+
+                <!-- Status message -->
+                <div class="lm-status-msg" id="lm-status-msg" style="display:none;"></div>
+            </div>
+        </div>
+
         <!-- Logs tab -->
         <div class="tab-content" id="logs-tab">
             <div class="log-container" id="logContainer">
@@ -327,6 +365,7 @@
     <script src="{{ url_for('static', filename='lib/logs.js') }}"></script>
     <script src="{{ url_for('static', filename='lib/token-metrics.js') }}"></script>
     <script src="{{ url_for('static', filename='lib/server-config.js') }}"></script>
+    <script src="{{ url_for('static', filename='lib/lm-instances.js') }}"></script>
     <!-- Main page script -->
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
