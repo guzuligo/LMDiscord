@@ -15,7 +15,10 @@ const state = {
     // Token metrics state
     isStreaming: false,
     currentTokenStream: '',
-    lastTokenUsage: null
+    lastTokenUsage: null,
+    // LM instance state
+    currentLmHostname: 'localhost',
+    currentLmPort: 1234
 };
 
 // ==================== DOM Elements ====================
@@ -212,6 +215,11 @@ async function checkStatus() {
         }
 
         updateModelInfo(data.lm_model, data.lm_models, state);
+        
+        // Update model select dropdown when connected
+        if (data.lm_connected && data.lm_models && data.lm_models.length > 0) {
+            updateModelSelect(data.lm_models, data.lm_hostname, data.lm_port);
+        }
     } catch (e) {
         // Ignore errors during status check
     }
@@ -381,11 +389,58 @@ function switchTab(tabName) {
         buttons[2]?.classList.add('active');
         document.getElementById('servers-tab')?.classList.add('active');
         loadServerConfig();
+    } else if (tabName === 'lm-instances') {
+        const idx = buttons.length - 2; // second to last
+        buttons[idx]?.classList.add('active');
+        document.getElementById('lm-instances-content')?.classList.add('active');
+        loadLmInstances();
     } else if (tabName === 'logs') {
-        buttons[3]?.classList.add('active');
+        buttons[buttons.length - 1]?.classList.add('active');
         document.getElementById('logs-tab')?.classList.add('active');
         refreshLogs();
     }
+}
+
+// ==================== Model Selection ====================
+
+function selectModel(modelId) {
+    if (!modelId) return;
+    
+    fetch('/api/lm_instances/active/model', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model_id: modelId})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            addMessage(`✅ Model changed to: ${modelId}`, 'system');
+        } else {
+            addMessage(`⚠️ Failed to select model: ${data.error || 'Unknown error'}`, 'error');
+        }
+    })
+    .catch(err => addMessage(`⚠️ Error: ${err.message}`, 'error'));
+}
+
+function updateModelSelect(models, hostname, port) {
+    const select = document.getElementById('modelSelect');
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">Select model...</option>';
+    
+    if (!models || models.length === 0) {
+        select.style.display = 'none';
+        return;
+    }
+    
+    models.forEach(modelId => {
+        const option = document.createElement('option');
+        option.value = modelId;
+        option.textContent = modelId;
+        select.appendChild(option);
+    });
+    
+    select.style.display = 'inline-block';
 }
 
 // ==================== Debug Panel ====================
@@ -409,6 +464,8 @@ window.addEventListener('load', async () => {
             sendBtn.disabled = false;
             hostInput.value = data.lm_hostname;
             portInput.value = data.lm_port;
+            state.currentLmHostname = data.lm_hostname;
+            state.currentLmPort = data.lm_port;
         }
 
         if (data.discord_connected) {

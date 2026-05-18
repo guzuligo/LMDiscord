@@ -108,7 +108,17 @@ class MessageProcessor:
                 if turn > 0:
                     await typing_callback(channel)
 
-                response = await self._execute_lm_call(call_lm_studio_func, messages_for_lm, channel_id)
+                # Determine max_tokens for this turn
+                max_tokens_override = None
+                # After tool processing, if previous response was empty, retry with higher max_tokens
+                if turn > 0 and response_text == "" and final_tool_calls is not None:
+                    max_tokens_override = min(self.max_tokens * 2, 8192)
+                    logger.info(f"[max_tokens retry] Retrying with max_tokens={max_tokens_override} (was {self.max_tokens})")
+
+                response = await self._execute_lm_call(
+                    call_lm_studio_func, messages_for_lm, channel_id,
+                    max_tokens_override=max_tokens_override
+                )
 
                 turn_usage = response.get("usage")
                 if turn_usage:
@@ -131,6 +141,30 @@ class MessageProcessor:
                 messages_for_lm.append(assistant_msg)
 
                 if not tool_calls:
+                    # Check if response is empty after tool processing (max_tokens overflow)
+                    if turn > 0 and response_text == "" and final_tool_calls is not None:
+                        if max_tokens_override and max_tokens_override > self.max_tokens:
+                            # Already retried with higher max_tokens and still empty → OOM or context too large
+                            logger.warning(f"[max_tokens] Empty response even with max_tokens={max_tokens_override}. "
+                                         f"LM Studio may be OOM. Suggest increasing server max_tokens.")
+                            response_text = (
+                                "⚠️ I was unable to generate a response. This may be because the conversation "
+                                "context is too large or the server is running low on memory. "
+                                "Please try starting a new session, or if you have control over the server, "
+                                "try increasing the max_tokens setting or reducing the conversation history."
+                            )
+                        else:
+                            # First retry attempt, add warning to context
+                            messages_for_lm.append({
+                                "role": "user",
+                                "content": (
+                                    "⚠️ NOTE: The previous response from me was empty. This may be because "
+                                    "the response hit a token limit. If you have control over the server, "
+                                    "try increasing max_tokens (currently set to " + str(self.max_tokens) + "). "
+                                    "For now, please respond naturally using the information above."
+                                )
+                            })
+                        break
                     logger.info(f"Got final response on turn {turn + 1}")
                     break
 
@@ -152,8 +186,18 @@ class MessageProcessor:
             response_text = "Sorry, I couldn't connect to LM Studio."
             await channel.send(response_text)
         except Exception as e:
-            logger.error(f"Error getting LM Studio response: {e}", exc_info=True)
-            response_text = "Sorry, I encountered an error processing your message."
+            error_str = str(e)
+            if self._is_oom_error(error_str):
+                logger.error(f"Possible OOM error: {e}")
+                response_text = (
+                    "⚠️ I encountered an internal server error. This is likely due to the server "
+                    "running out of memory (OOM). If you have control over the server, please check "
+                    "the server logs and consider reducing the number of concurrent requests or "
+                    "using a model with fewer parameters."
+                )
+            else:
+                logger.error(f"Error getting LM Studio response: {e}", exc_info=True)
+                response_text = "Sorry, I encountered an error processing your message."
             await channel.send(response_text)
 
         # Post response
@@ -212,7 +256,16 @@ class MessageProcessor:
                 if turn > 0:
                     await typing_callback(message.channel)
 
-                response = await self._execute_lm_call(call_lm_studio_func, messages_for_lm, channel_id)
+                # Determine max_tokens for this turn
+                max_tokens_override = None
+                if turn > 0 and response_text == "" and final_tool_calls is not None:
+                    max_tokens_override = min(self.max_tokens * 2, 8192)
+                    logger.info(f"[max_tokens retry] Retrying with max_tokens={max_tokens_override} (was {self.max_tokens})")
+
+                response = await self._execute_lm_call(
+                    call_lm_studio_func, messages_for_lm, channel_id,
+                    max_tokens_override=max_tokens_override
+                )
 
                 turn_usage = response.get("usage")
                 if turn_usage:
@@ -235,6 +288,28 @@ class MessageProcessor:
                 messages_for_lm.append(assistant_msg)
 
                 if not tool_calls:
+                    # Check if response is empty after tool processing (max_tokens overflow)
+                    if turn > 0 and response_text == "" and final_tool_calls is not None:
+                        if max_tokens_override and max_tokens_override > self.max_tokens:
+                            logger.warning(f"[max_tokens] Empty response even with max_tokens={max_tokens_override}. "
+                                         f"LM Studio may be OOM.")
+                            response_text = (
+                                "⚠️ I was unable to generate a response. This may be because the conversation "
+                                "context is too large or the server is running low on memory. "
+                                "Please try starting a new session, or if you have control over the server, "
+                                "try increasing the max_tokens setting or reducing the conversation history."
+                            )
+                        else:
+                            messages_for_lm.append({
+                                "role": "user",
+                                "content": (
+                                    "⚠️ NOTE: The previous response from me was empty. This may be because "
+                                    "the response hit a token limit. If you have control over the server, "
+                                    "try increasing max_tokens (currently set to " + str(self.max_tokens) + "). "
+                                    "For now, please respond naturally using the information above."
+                                )
+                            })
+                        break
                     break
 
                 # Process tool calls via ToolCallHandler
@@ -256,8 +331,18 @@ class MessageProcessor:
                 response_text = response_text[:1997] + "..."
 
         except Exception as e:
-            logger.error(f"Error in active session: {e}", exc_info=True)
-            response_text = "Sorry, I encountered an error processing your message."
+            error_str = str(e)
+            if self._is_oom_error(error_str):
+                logger.error(f"Possible OOM error in active session: {e}")
+                response_text = (
+                    "⚠️ I encountered an internal server error. This is likely due to the server "
+                    "running out of memory (OOM). If you have control over the server, please check "
+                    "the server logs and consider reducing the number of concurrent requests or "
+                    "using a model with fewer parameters."
+                )
+            else:
+                logger.error(f"Error in active session: {e}", exc_info=True)
+                response_text = "Sorry, I encountered an error processing your message."
 
         # Update history
         history.append({"role": "user", "content": formatted_content})
@@ -298,13 +383,46 @@ class MessageProcessor:
         self,
         call_func: Optional[Callable],
         messages_for_lm: List[Dict],
-        channel_id: int
+        channel_id: int,
+        max_tokens_override: Optional[int] = None
     ) -> Dict:
-        """Execute LM Studio call via provided function or internal method."""
+        """Execute LM Studio call via provided function or internal method.
+        
+        Args:
+            call_func: Optional callable for the LM API call
+            messages_for_lm: Messages to send
+            channel_id: Channel ID for logging
+            max_tokens_override: Optional override for max_tokens (used for retries)
+        """
+        effective_max_tokens = max_tokens_override or self.max_tokens
         if call_func:
             return await call_func(
                 messages_for_lm, self._tools,
-                self.temperature, self.max_tokens,
+                self.temperature, effective_max_tokens,
                 channel_id=channel_id, use_tool_calling=self.use_tool_calling
             )
-        return await self._lm_caller.call(messages_for_lm, channel_id, self.use_tool_calling)
+        return await self._lm_caller.call(messages_for_lm, channel_id, self.use_tool_calling, max_tokens=effective_max_tokens)
+
+    def _is_oom_error(self, error_str: str) -> bool:
+        """Check if an error indicates OOM (Out of Memory)."""
+        oom_indicators = ["out of memory", "oom", "cuda out of memory", "runtime error", "500",
+                         "internal server error", "context length", "context exceeded",
+                         "max context", "too many tokens"]
+        error_lower = error_str.lower()
+        return any(indicator in error_lower for indicator in oom_indicators)
+
+    def _is_max_tokens_overflow(self, response: Dict) -> bool:
+        """Check if response indicates max_tokens overflow (empty content)."""
+        choices = response.get("choices", [])
+        if not choices:
+            return True
+        message = choices[0].get("message", {})
+        content = message.get("content", "")
+        finish_reason = choices[0].get("finish_reason", "")
+        # Empty content with length finish_reason = max_tokens overflow
+        if content == "" and finish_reason == "length":
+            return True
+        # Also detect empty content with no tool calls as potential overflow
+        if content == "" and not message.get("tool_calls"):
+            return True
+        return False

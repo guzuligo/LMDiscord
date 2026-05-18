@@ -22,12 +22,53 @@ class LMStudioClient:
         """
         self.hostname = hostname
         self.port = port
+        self._selected_model: str = ""  # Empty = let LM Studio pick
         self.base_url = f"http://{hostname}:{port}/v1"
         self.chat_url = f"{self.base_url}/chat/completions"
         self._is_connected = False
         self._model = "local-model"
         self._models: List[str] = []
         self._config: Optional[Any] = None
+
+    @property
+    def selected_model(self) -> str:
+        """Get the selected model name (may be empty)."""
+        return self._selected_model
+
+    @selected_model.setter
+    def selected_model(self, value: str) -> None:
+        """Set the selected model name."""
+        self._selected_model = value
+
+    def switch_to(self, hostname: str, port: int = 1234) -> bool:
+        """Switch to a different LM Studio instance.
+        
+        Args:
+            hostname: New LM Studio server hostname
+            port: New LM Studio server port
+            
+        Returns:
+            True if switch successful, False otherwise
+        """
+        try:
+            old_hostname = self.hostname
+            old_port = self.port
+            self.hostname = hostname
+            self.port = port
+            self.base_url = f"http://{hostname}:{port}/v1"
+            self.chat_url = f"{self.base_url}/chat/completions"
+            
+            # Test connection
+            if self.connect():
+                return True
+            # Revert on failure
+            self.hostname = old_hostname
+            self.port = old_port
+            self.base_url = f"http://{old_hostname}:{old_port}/v1"
+            self.chat_url = f"{self.base_url}/chat/completions"
+            return False
+        except Exception:
+            return False
     
     @property
     def config(self) -> Optional[Any]:
@@ -54,7 +95,11 @@ class LMStudioClient:
                 data = response.json()
                 self._models = [m.get("id", "") for m in data.get("data", [])]
                 if self._models:
-                    self._model = self._models[0]
+                    # Prefer selected_model if it's in the available list
+                    if self._selected_model and self._selected_model in self._models:
+                        self._model = self._selected_model
+                    else:
+                        self._model = self._models[0]
                 self._is_connected = True
                 return True
             return False
