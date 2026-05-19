@@ -31,8 +31,70 @@
 
 ---
 
+## Known UX Improvements (Not Yet Fixed)
+
+### UX-002: Mini-Context Image Descriptions Use Generic Prompt (Not User-Specific)
+
+| Field | Value |
+|-------|-------|
+| **ID** | UX-002 |
+| **Date** | 2026-05-19 |
+| **Status** | 🔄 Known, Improvement Planned |
+| **Severity** | Low (UX improvement) |
+| **Description** | When LM Studio calls `image_describe` or `image_compare`, the mini-context prompt is always "Please describe this image in detail, up to 3-4 sentences." regardless of what the user actually asked. For example, when the user asks "Is the person in these images the same?", the mini-context should prompt "Describe the facial features and appearance relevant to identifying this person" instead of a generic description request. |
+| **Current Behavior** | Mini-context sends generic "Please describe this image in detail, up to 3-4 sentences." → Generic description returned → Comparison/response uses generic descriptions |
+| **Desired Behavior** | Mini-context should extract the user's question from conversation history and rephrase the prompt to focus on what the user is asking about → Targeted description returned → Better comparison/response |
+| **Fix Required** | 1. Modify `_build_mini_context()` in `tool_executor.py` to accept optional `user_context` parameter 2. Extract user's last message from `messages_for_lm` history in `_handle_image_describe()` and `_handle_image_compare()` 3. Pass user context through to mini-context so prompt becomes: "The user asked: [question]. Describe the visual elements relevant to this question." 4. Apply same fix to `image_compare.py` → `compare_images_async()` |
+| **Files To Modify** | `src/discord_bot/tool_executor.py`, `src/tools/builtins/image_compare.py` |
+
+---
+
+| Field | Value |
+|-------|-------|
+| **ID** | REASONING-FIX |
+| **Date** | 2026-05-19 |
+| **Status** | ✅ Implemented |
+| **Severity** | Critical |
+| **Description** | The model (qwen3.6-35b-a3b) was entering extremely long internal reasoning loops (6383 reasoning tokens observed), causing 120-second READ TIMEOUT errors from LM Studio when processing tool calls like `image_compare`. The default max_tokens=2500 was insufficient for the model's extended reasoning. |
+| **Root Cause** | 1) The model's default behavior produces very long internal reasoning before responding. 2) No temperature control for tool-calling turns (temperature was always 0.7). 3) No max_tokens differentiation between tool-calling turns and final responses. 4) No system prompt instruction to keep reasoning brief. |
+| **Fix Applied** | Multi-part fix: |
+| **Fix Details** | 1. **Reasoning Brevity Instruction**: Added critical instructions to system prompt in `message_handler.py` `handle_new_session()` that tell the model to keep reasoning SHORT, respond directly after tool results, and avoid extended chain-of-thought. <br> 2. **Tool-Specific max_tokens**: Modified `_call_lm_studio_via_processor()` in `message_handler.py` to use `tool_max_tokens` (2048) for tool-calling turns and `final_max_tokens` (8192) for final responses after tool results. Detected by checking for `role: "tool"` messages in context. <br> 3. **Lower Tool Temperature**: Tool-calling turns now use `tool_temperature` (0.3) instead of the default 0.7, producing more consistent tool arguments. <br> 4. **Tools Config Web UI**: Added new "⚙️ Tools Config" tab to the web UI with form fields for all settings. <br> 5. **Config Persistence**: Added `tools_config` section to config.py with `get_tools_config()`/`set_tools_config()` methods and API endpoints in app.py. |
+| **Files Modified** | `src/config.py`, `src/app.py`, `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py`, `src/templates/index.html`, `src/static/lm-instances.css`, `src/static/script.js` |
+| **Config Schema** | ```json
+{
+  "tools_config": {
+    "reasoning_brevity": true,
+    "tool_max_tokens": 2048,
+    "tool_temperature": 0.3,
+    "final_max_tokens": 8192,
+    "use_tool_calling": true
+  }
+}
+``` |
+| **Testing** | Requires live testing with image_compare tool to verify timeout no longer occurs. Monitor LM Studio logs for reasoning token count. |
+
+---
+
 ## Overview
 Discord Bot + LM Studio Integration - First POC implementation
+
+## Known UX Improvements (Not Yet Fixed)
+
+### UX-002: Mini-Context Image Descriptions Use Generic Prompt (Not User-Specific)
+
+| Field | Value |
+|-------|-------|
+| **ID** | UX-002 |
+| **Date** | 2026-05-19 |
+| **Status** | 🔄 Known, Improvement Planned |
+| **Severity** | Low (UX improvement) |
+| **Description** | When LM Studio calls `image_describe` or `image_compare`, the mini-context prompt is always "Please describe this image in detail, up to 3-4 sentences." regardless of what the user actually asked. For example, when the user asks "Is the person in these images the same?", the mini-context should prompt "Describe the facial features and appearance relevant to identifying this person" instead of a generic description request. |
+| **Current Behavior** | Mini-context sends generic "Please describe this image in detail, up to 3-4 sentences." → Generic description returned → Comparison/response uses generic descriptions |
+| **Desired Behavior** | Mini-context should extract the user's question from conversation history and rephrase the prompt to focus on what the user is asking about → Targeted description returned → Better comparison/response |
+| **Fix Required** | 1. Modify `_build_mini_context()` in `tool_executor.py` to accept optional `user_context` parameter 2. Extract user's last message from `messages_for_lm` history in `_handle_image_describe()` and `_handle_image_compare()` 3. Pass user context through to mini-context so prompt becomes: "The user asked: [question]. Describe the visual elements relevant to this question." 4. Apply same fix to `image_compare.py` → `compare_images_async()` |
+| **Files To Modify** | `src/discord_bot/tool_executor.py`, `src/tools/builtins/image_compare.py` |
+
+---
 
 ## Approach
 Web-based chat interface using Flask for LM Studio communication.
