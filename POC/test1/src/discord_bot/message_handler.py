@@ -54,7 +54,12 @@ class MessageHandler:
         executor: Optional[ThreadPoolExecutor] = None,
         tool_executor_instance: Optional[Any] = None,
         allowed_image_hostnames: Optional[List[str]] = None,
-        lm_studio_lock: Optional[Any] = None
+        lm_studio_lock: Optional[Any] = None,
+        # Tools config (REASONING-FIX)
+        reasoning_brevity: bool = True,
+        tool_max_tokens: int = 2048,
+        tool_temperature: float = 0.3,
+        final_max_tokens: int = 8192
     ):
         """Initialize message handler."""
         self.lm_studio_client = lm_studio_client
@@ -65,6 +70,12 @@ class MessageHandler:
         self._tools = tools or [self.END_SESSION_TOOL]
         self._executor = executor or ThreadPoolExecutor(max_workers=2)
         self._lm_studio_lock = lm_studio_lock
+
+        # Tools config (REASONING-FIX)
+        self._reasoning_brevity = reasoning_brevity
+        self._tool_max_tokens = tool_max_tokens
+        self._tool_temperature = tool_temperature
+        self._final_max_tokens = final_max_tokens
 
         # Set up tool executor
         self._tool_executor = tool_executor_instance
@@ -110,6 +121,32 @@ class MessageHandler:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self._processor.set_params(temperature, max_tokens)
+
+    def apply_tools_config(
+        self,
+        reasoning_brevity: bool = True,
+        tool_max_tokens: int = 2048,
+        tool_temperature: float = 0.3,
+        final_max_tokens: int = 8192,
+        use_tool_calling: bool = True
+    ) -> None:
+        """Apply tools configuration changes.
+        
+        These settings take effect on new sessions (system prompt rebuild)
+        and subsequent LM API calls (temperature/max_tokens).
+        
+        Args:
+            reasoning_brevity: Whether to add brevity instruction to system prompt
+            tool_max_tokens: Max tokens for tool-calling requests
+            tool_temperature: Temperature for tool-calling requests
+            final_max_tokens: Max tokens for final responses
+            use_tool_calling: Whether tool calling is enabled
+        """
+        self._reasoning_brevity = reasoning_brevity
+        self._tool_max_tokens = tool_max_tokens
+        self._tool_temperature = tool_temperature
+        self._final_max_tokens = final_max_tokens
+        self.use_tool_calling = use_tool_calling
 
     def register_tool(self, tool_name: str, tool_instance: Any) -> None:
         """Register a tool instance for execution."""
@@ -163,6 +200,12 @@ class MessageHandler:
         # Build system prompt with user identity context
         identity_context = UserIdentity.build_context(author_name, author_display, author_nick, user_id)
 
+        # Store for apply_tools_config rebuild
+        self._last_author_name = author_name
+        self._last_author_display = author_display
+        self._last_author_nick = author_nick
+        self._last_user_id = user_id
+
         system_prompt = self.system_prompt + (
             identity_context +
             "\n\nUsers will mention you or reply to you to start conversations.\n"
@@ -176,6 +219,17 @@ class MessageHandler:
             "IMPORTANT: Do not call image_describe for every image. Only call it when the user clearly wants a detailed description.\n"
             "IMPORTANT: After calling image_describe, you will receive the description in the tool result. DO NOT call image_describe again for the same image. Use the description to respond.\n"
         )
+        
+        # REASONING-FIX: Add reasoning brevity instruction if enabled
+        if self._reasoning_brevity:
+            system_prompt += (
+                "\n\n⚠️ CRITICAL INSTRUCTIONS FOR RESPONSE QUALITY:\n"
+                "1. When using tools, keep your reasoning and tool call arguments SHORT and PRECISE.\n"
+                "2. After receiving tool results, respond directly — do NOT re-explain your reasoning.\n"
+                "3. Do NOT output extended internal reasoning or chain-of-thought.\n"
+                "4. Keep all responses concise — especially tool call arguments and final answers.\n"
+                "5. When you have the answer, respond immediately without extra reasoning steps.\n"
+            )
 
         # Include image attachment info in content
         if image_attachments:
@@ -287,11 +341,41 @@ class MessageHandler:
         channel_id: int,
         use_tool_calling: bool
     ) -> Dict:
-        """Wrapper for _call_lm_studio that matches the processor's expected signature."""
-        if use_tool_calling:
+        """Wrapper for _call_lm_studio that matches the processor's expected signature.
+        
+        REASONING-FIX: When tool calling is enabled, uses tool-specific settings
+        (tool_temperature, tool_max_tokens) for tool calls and final_max_tokens
+        for final responses.
+        """
+        # Detect if this is a tool call turn (has tool_calls in context) or final response
+        # We check the last few messages for tool_call presence to determine context
+        has_tool_context = any(
+            m.get("role") == "assistant" and "tool_calls" in m 
+            for m in messages_for_lm[-5:] if isinstance(m, dict)
+        )
+        
+        # Check if last user message contains a tool result (means we're waiting for final response)
+        has_tool_result = any(
+            m.get("role") == "tool" 
+            for m in messages_for_lm[-3:] if isinstance(m, dict)
+        )
+        
+        if use_tool_calling and tools:
+            # Determine which settings to use based on context
+            if has_tool_result:
+                # This is a final response after tool result - use final settings
+                effective_temp = self.temperature
+                effective_max_tokens = self._final_max_tokens
+                logger.debug(f"[tools-config] Final response after tool result: temp={effective_temp}, max_tokens={effective_max_tokens}")
+            else:
+                # This is a tool call turn - use tool-specific settings
+                effective_temp = self._tool_temperature
+                effective_max_tokens = self._tool_max_tokens
+                logger.debug(f"[tools-config] Tool call turn: temp={effective_temp}, max_tokens={effective_max_tokens}")
+            
             return await self._call_lm_studio(
                 self.lm_studio_client.chat_with_tools,
-                messages_for_lm, tools, temperature, max_tokens,
+                messages_for_lm, tools, effective_temp, effective_max_tokens,
                 channel_id=channel_id
             )
         else:

@@ -195,3 +195,372 @@
     background: rgba(243, 139, 168, 0.15);
     color: #f38ba8;
 }
+
+/* ====================================================================
+   Tools Config Styling
+   ==================================================================== */
+
+.tools-config-container {
+    padding: 8px;
+}
+
+.tools-config-container .lm-instances-header {
+    margin-bottom: 16px;
+}
+
+/* Tools config grid - two column layout */
+.tools-config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.tools-config-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tools-config-label {
+    font-size: 12px;
+    color: #cdd6f4;
+    font-weight: bold;
+}
+
+.tools-config-input {
+    padding: 6px 10px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-size: 13px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.tools-config-input:focus {
+    outline: none;
+    border-color: #89b4fa;
+    box-shadow: 0 0 4px rgba(137, 180, 250, 0.3);
+}
+
+.tools-config-desc {
+    font-size: 10px;
+    color: #6c7086;
+    margin-top: 2px;
+}
+
+/* ====================================================================
+   Server Config Header (for consistency across tabs)
+   ==================================================================== */
+
+.server-config-header {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: #181825;
+    border-radius: 6px;
+}
+
+.server-config-header h3 {
+    margin: 0 0 4px 0;
+    color: #cdd6f4;
+    font-size: 16px;
+}
+
+.server-config-section {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: #181825;
+    border-radius: 6px;
+}
+
+.server-config-placeholder {
+    color: #6c7086;
+    font-size: 13px;
+    padding: 20px;
+    text-align: center;
+    background: #181825;
+    border-radius: 4px;
+    border: 1px dashed #45475a;
+}
+
+/* Server form grid */
+.server-form-grid {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.server-form-item-wide {
+    grid-column: 1 / -1;
+}
+
+.server-form-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.server-form-label {
+    font-size: 12px;
+    color: #a6adc8;
+}
+
+.server-id-input,
+.server-name-input {
+    padding: 6px 10px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.server-id-input:focus,
+.server-name-input:focus {
+    outline: none;
+    border-color: #89b4fa;
+}
+
+/* Server settings */
+.server-settings-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.server-setting-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.server-setting-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #cdd6f4;
+}
+
+.server-setting-desc {
+    font-size: 11px;
+    color: #6c7086;
+    padding-left: 20px;
+}
+
+/* Channel mode options */
+.channel-mode-options {
+    display: flex;
+    gap: 16px;
+    padding-left: 20px;
+}
+
+.channel-mode-options label {
+    font-size: 12px;
+    color: #a6adc8;
+}
+
+/* Channels section */
+.server-channels-section {
+    margin-bottom: 16px;
+}
+
+.server-channels-section h5 {
+    margin: 0 0 8px 0;
+    color: #cdd6f4;
+    font-size: 13px;
+}
+
+.channel-input-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.channel-id-input {
+    flex: 1;
+    padding: 6px 10px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.channel-id-input:focus {
+    outline: none;
+    border-color: #89b4fa;
+}
+
+.channel-list {
+    max-height: 150px;
+    overflow-y: auto;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    background: #181825;
+}
+
+.channel-list-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    border-bottom: 1px solid #313244;
+    font-size: 12px;
+}
+
+.channel-list-item:last-child {
+    border-bottom: none;
+}
+
+.channel-list-item .channel-name {
+    color: #89b4fa;
+    font-weight: bold;
+}
+
+.channel-list-item .channel-id {
+    color: #6c7086;
+    font-family: monospace;
+    font-size: 11px;
+}
+
+.channel-list-item .channel-category {
+    color: #a6adc8;
+    font-size: 11px;
+}
+
+.channel-list-item .remove-channel-btn {
+    background: #f38ba8;
+    color: #1e1e2e;
+    border: none;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.channel-list-placeholder {
+    color: #6c7086;
+    font-size: 12px;
+    padding: 10px;
+    text-align: center;
+}
+
+/* Channel search */
+.channel-search-row {
+    margin-top: 8px;
+}
+
+.channel-search-input {
+    width: 100%;
+    padding: 6px 10px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-size: 12px;
+    box-sizing: border-box;
+}
+
+.channel-search-input:focus {
+    outline: none;
+    border-color: #89b4fa;
+}
+
+/* Server form actions */
+.server-form-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding-top: 8px;
+}
+
+.server-form-actions .btn-small {
+    padding: 4px 12px;
+    font-size: 12px;
+}
+
+/* Delay value display */
+.delay-value-display {
+    color: #a6e3a1;
+    font-size: 11px;
+    font-weight: bold;
+    margin-left: 8px;
+}
+
+/* System prompt styling */
+.system-prompt-section {
+    margin-bottom: 12px;
+    padding: 12px;
+    background: #181825;
+    border-radius: 6px;
+}
+
+.system-prompt-label {
+    font-size: 13px;
+    color: #cdd6f4;
+    display: block;
+    margin-bottom: 8px;
+}
+
+.system-prompt-textarea {
+    width: 100%;
+    min-height: 80px;
+    padding: 8px 12px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+    resize: vertical;
+    box-sizing: border-box;
+}
+
+.system-prompt-textarea:focus {
+    outline: none;
+    border-color: #89b4fa;
+}
+
+.system-prompt-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.system-prompt-status {
+    font-size: 12px;
+    color: #a6e3a1;
+}
+
+.btn-small {
+    padding: 4px 12px;
+    font-size: 12px;
+}
+
+/* Delay input */
+.delay-input {
+    width: 80px;
+    padding: 4px 8px;
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    font-size: 12px;
+    text-align: center;
+}
+
+.delay-input:focus {
+    outline: none;
+    border-color: #89b4fa;
+}
+
+/* Settings row 2 */
+.settings-row-2 {
+    margin-top: 4px;
+}

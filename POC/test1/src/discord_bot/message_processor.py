@@ -164,7 +164,7 @@ class MessageProcessor:
                                     "For now, please respond naturally using the information above."
                                 )
                             })
-                        break
+                        continue
                     logger.info(f"Got final response on turn {turn + 1}")
                     break
 
@@ -309,7 +309,7 @@ class MessageProcessor:
                                     "For now, please respond naturally using the information above."
                                 )
                             })
-                        break
+                        continue
                     break
 
                 # Process tool calls via ToolCallHandler

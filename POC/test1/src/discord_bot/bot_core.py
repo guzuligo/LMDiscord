@@ -102,6 +102,11 @@ class DiscordBot:
         allowed_hostnames = []
         if hasattr(lm_studio_client, 'config') and lm_studio_client.config:
             allowed_hostnames = lm_studio_client.config.allowed_image_hostnames if hasattr(lm_studio_client.config, 'allowed_image_hostnames') else []
+            
+        # Get tools config from config (REASONING-FIX)
+        tools_config = {}
+        if hasattr(lm_studio_client, 'config') and lm_studio_client.config:
+            tools_config = lm_studio_client.config.get_tools_config()
         
         self._message_handler = MessageHandler(
             lm_studio_client=lm_studio_client,
@@ -112,8 +117,16 @@ class DiscordBot:
             tools=self._tool_definitions,
             executor=self._executor,
             allowed_image_hostnames=allowed_hostnames,
-            lm_studio_lock=self._lm_studio_lock
+            lm_studio_lock=self._lm_studio_lock,
+            # Tools config (REASONING-FIX)
+            reasoning_brevity=tools_config.get('reasoning_brevity', True),
+            tool_max_tokens=tools_config.get('tool_max_tokens', 2048),
+            tool_temperature=tools_config.get('tool_temperature', 0.3),
+            final_max_tokens=tools_config.get('final_max_tokens', 8192)
         )
+        
+        # Store tools config for apply_tools_config
+        self._tools_config = tools_config
 
         # Discord client setup
         self.intents = discord.Intents.default()
@@ -845,3 +858,41 @@ class DiscordBot:
         # Sort by position ( Discord API already returns sorted, but ensure it)
         channels.sort(key=lambda x: x["position"])
         return channels
+
+    # ====================================================================
+    # Tools Configuration (REASONING-FIX)
+    # ====================================================================
+
+    def apply_tools_config(self, tools_config: dict) -> None:
+        """Apply tools configuration to the message handler.
+        
+        This method is called when the tools config is updated via the web UI
+        while the bot is running, to dynamically apply the new settings.
+        
+        Args:
+            tools_config: Dict with keys: reasoning_brevity, tool_max_tokens,
+                         tool_temperature, final_max_tokens, use_tool_calling
+        """
+        reasoning_brevity = tools_config.get("reasoning_brevity", True)
+        tool_max_tokens = tools_config.get("tool_max_tokens", 2048)
+        tool_temperature = tools_config.get("tool_temperature", 0.3)
+        final_max_tokens = tools_config.get("final_max_tokens", 8192)
+        use_tool_calling = tools_config.get("use_tool_calling", True)
+        
+        # Update the message handler with new settings
+        self._message_handler.apply_tools_config(
+            reasoning_brevity=reasoning_brevity,
+            tool_max_tokens=tool_max_tokens,
+            tool_temperature=tool_temperature,
+            final_max_tokens=final_max_tokens,
+            use_tool_calling=use_tool_calling
+        )
+        
+        # Store on bot instance for reference
+        self._tools_config = tools_config
+        
+        logger.info(
+            f"Tools config applied: reasoning_brevity={reasoning_brevity}, "
+            f"tool_max_tokens={tool_max_tokens}, tool_temperature={tool_temperature}, "
+            f"final_max_tokens={final_max_tokens}, use_tool_calling={use_tool_calling}"
+        )
