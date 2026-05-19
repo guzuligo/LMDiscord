@@ -896,6 +896,24 @@ _No open issues._
 
 ---
 
+### UX-002: Mini-Context Image Descriptions Use Generic Prompt (Not User-Specific)
+
+| Field | Value |
+|-------|-------|
+| **ID** | UX-002 |
+| **Date** | 2026-05-19 |
+| **Status** | 🔄 Known, Improvement Planned |
+| **Severity** | Low (UX improvement) |
+| **Description** | When LM Studio calls `image_describe` or `image_compare`, the mini-context prompt is always "Please describe this image in detail, up to 3-4 sentences." regardless of what the user actually asked. For example, when the user asks "Is the person in these images the same?", the mini-context should prompt "Describe the facial features and appearance relevant to identifying this person" instead of a generic description request. |
+| **Current Behavior** | Mini-context sends generic "Please describe this image in detail, up to 3-4 sentences." → Generic description returned → Comparison/response uses generic descriptions |
+| **Desired Behavior** | Mini-context should extract the user's question from conversation history and rephrase the prompt to focus on what the user is asking about → Targeted description returned → Better comparison/response |
+| **Fix Required** | 1. Modify `_build_mini_context()` in `tool_executor.py` to accept optional `user_context` parameter 2. Extract user's last message from `messages_for_lm` history in `_handle_image_describe()` and `_handle_image_compare()` 3. Pass user context through to mini-context so prompt becomes: "The user asked: [question]. Describe the visual elements relevant to this question." 4. Apply same fix to `image_compare.py` → `compare_images_async()` |
+| **Files To Modify** | `src/discord_bot/tool_executor.py`, `src/tools/builtins/image_compare.py` |
+
+---
+
+---
+
 ### REASONING-FIX: Model Excessive Reasoning Causing 120s Read Timeout
 
 | Field | Value |
