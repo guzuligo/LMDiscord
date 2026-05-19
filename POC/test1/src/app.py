@@ -598,6 +598,87 @@ def get_debug_token_metrics():
 _config_path = str(Path(__file__).parent.parent / "config.json")
 init_instance_manager(_config_path)
 
+# ==================== Tools Config Settings ====================
+
+@app.route("/api/tools_config", methods=["GET"])
+def get_tools_config():
+    """Get the current tools configuration."""
+    return jsonify({
+        "success": True,
+        "tools_config": config.get_tools_config()
+    })
+
+
+@app.route("/api/tools_config", methods=["POST"])
+def set_tools_config():
+    """Update the tools configuration."""
+    data = request.get_json()
+    tools_config = data.get("tools_config", {})
+    
+    # Validate reasoning_brevity
+    reasoning_brevity = tools_config.get("reasoning_brevity", config.tool_reasoning_brevity)
+    if not isinstance(reasoning_brevity, bool):
+        return jsonify({"success": False, "error": "reasoning_brevity must be a boolean"}), 400
+    
+    # Validate tool_max_tokens
+    tool_max_tokens = tools_config.get("tool_max_tokens", config.tool_max_tokens)
+    try:
+        tool_max_tokens = int(tool_max_tokens)
+        if tool_max_tokens < 128 or tool_max_tokens > 32768:
+            return jsonify({"success": False, "error": "tool_max_tokens must be between 128 and 32768"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid tool_max_tokens value"}), 400
+    
+    # Validate tool_temperature
+    tool_temperature = tools_config.get("tool_temperature", config.tool_temperature)
+    try:
+        tool_temperature = float(tool_temperature)
+        if tool_temperature < 0.0 or tool_temperature > 2.0:
+            return jsonify({"success": False, "error": "tool_temperature must be between 0.0 and 2.0"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid tool_temperature value"}), 400
+    
+    # Validate final_max_tokens
+    final_max_tokens = tools_config.get("final_max_tokens", config.final_max_tokens)
+    try:
+        final_max_tokens = int(final_max_tokens)
+        if final_max_tokens < 128 or final_max_tokens > 65536:
+            return jsonify({"success": False, "error": "final_max_tokens must be between 128 and 65536"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid final_max_tokens value"}), 400
+    
+    # Validate use_tool_calling
+    use_tool_calling = tools_config.get("use_tool_calling", config.tools_use_tool_calling)
+    if not isinstance(use_tool_calling, bool):
+        return jsonify({"success": False, "error": "use_tool_calling must be a boolean"}), 400
+    
+    # Apply all settings
+    config.tool_reasoning_brevity = reasoning_brevity
+    config.tool_max_tokens = tool_max_tokens
+    config.tool_temperature = tool_temperature
+    config.final_max_tokens = final_max_tokens
+    config.tools_use_tool_calling = use_tool_calling
+    config.save()
+    
+    # Apply to Discord bot if running
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        _bot.apply_tools_config({
+            "reasoning_brevity": reasoning_brevity,
+            "tool_max_tokens": tool_max_tokens,
+            "tool_temperature": tool_temperature,
+            "final_max_tokens": final_max_tokens,
+            "use_tool_calling": use_tool_calling
+        })
+    
+    logger.info(f"Tools config updated: tool_max_tokens={tool_max_tokens}, tool_temperature={tool_temperature}, final_max_tokens={final_max_tokens}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "tools_config": config.get_tools_config()
+    })
+
+
 # ==================== Blueprint Registration ====================
 
 # Create blueprints for modular routing

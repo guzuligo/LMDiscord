@@ -1,6 +1,36 @@
 
 # Implementation Progress - POC: test1
 
+## Recent Fixes (2026-05-19)
+
+### REASONING-FIX: Model Excessive Reasoning Causing 120s Read Timeout
+
+| Field | Value |
+|-------|-------|
+| **ID** | REASONING-FIX |
+| **Date** | 2026-05-19 |
+| **Status** | ✅ Implemented |
+| **Severity** | Critical |
+| **Description** | The model (qwen3.6-35b-a3b) was entering extremely long internal reasoning loops (6383 reasoning tokens observed), causing 120-second READ TIMEOUT errors from LM Studio when processing tool calls like `image_compare`. The default max_tokens=2500 was insufficient for the model's extended reasoning. |
+| **Root Cause** | 1) The model's default behavior produces very long internal reasoning before responding. 2) No temperature control for tool-calling turns (temperature was always 0.7). 3) No max_tokens differentiation between tool-calling turns and final responses. 4) No system prompt instruction to keep reasoning brief. |
+| **Fix Applied** | Multi-part fix: |
+| **Fix Details** | 1. **Reasoning Brevity Instruction**: Added critical instructions to system prompt in `message_handler.py` `handle_new_session()` that tell the model to keep reasoning SHORT, respond directly after tool results, and avoid extended chain-of-thought. <br> 2. **Tool-Specific max_tokens**: Modified `_call_lm_studio_via_processor()` in `message_handler.py` to use `tool_max_tokens` (2048) for tool-calling turns and `final_max_tokens` (8192) for final responses after tool results. Detected by checking for `role: "tool"` messages in context. <br> 3. **Lower Tool Temperature**: Tool-calling turns now use `tool_temperature` (0.3) instead of the default 0.7, producing more consistent tool arguments. <br> 4. **Tools Config Web UI**: Added new "⚙️ Tools Config" tab to the web UI with form fields for all settings. <br> 5. **Config Persistence**: Added `tools_config` section to config.py with `get_tools_config()`/`set_tools_config()` methods and API endpoints in app.py. |
+| **Files Modified** | `src/config.py`, `src/app.py`, `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py`, `src/templates/index.html`, `src/static/lm-instances.css`, `src/static/script.js` |
+| **Config Schema** | ```json
+{
+  "tools_config": {
+    "reasoning_brevity": true,
+    "tool_max_tokens": 2048,
+    "tool_temperature": 0.3,
+    "final_max_tokens": 8192,
+    "use_tool_calling": true
+  }
+}
+``` |
+| **Testing** | Requires live testing with image_compare tool to verify timeout no longer occurs. Monitor LM Studio logs for reasoning token count. |
+
+---
+
 ## Overview
 Discord Bot + LM Studio Integration - First POC implementation
 

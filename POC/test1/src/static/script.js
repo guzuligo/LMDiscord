@@ -390,10 +390,15 @@ function switchTab(tabName) {
         document.getElementById('servers-tab')?.classList.add('active');
         loadServerConfig();
     } else if (tabName === 'lm-instances') {
-        const idx = buttons.length - 2; // second to last
+        const idx = buttons.length - 2; // second to last (before logs)
         buttons[idx]?.classList.add('active');
         document.getElementById('lm-instances-content')?.classList.add('active');
         loadLmInstances();
+    } else if (tabName === 'tools-config') {
+        const idx = buttons.length - 3; // third to last (before logs and tools-config is before logs)
+        buttons[idx]?.classList.add('active');
+        document.getElementById('tools-config-tab')?.classList.add('active');
+        loadToolsConfig();
     } else if (tabName === 'logs') {
         buttons[buttons.length - 1]?.classList.add('active');
         document.getElementById('logs-tab')?.classList.add('active');
@@ -490,6 +495,7 @@ window.addEventListener('load', async () => {
     await loadTemperature();
     await loadMaxResponseLength();
     await loadSystemPrompt();
+    await loadToolsConfig();
 
     // Start log polling
     fetchLogs();
@@ -586,5 +592,100 @@ async function loadSystemPrompt() {
     } catch (e) {
         console.error('Failed to load system prompt:', e);
         updateSystemPromptStatusText('Error loading');
+    }
+}
+
+// ==================== Tools Config Functions ====================
+
+async function loadToolsConfig() {
+    try {
+        const response = await fetch('/api/tools_config');
+        const data = await response.json();
+        if (data.success && data.tools_config) {
+            const cfg = data.tools_config;
+            
+            // Set form values
+            const reasoningBrevity = document.getElementById('toolsReasoningBrevity');
+            if (reasoningBrevity) reasoningBrevity.checked = cfg.reasoning_brevity;
+            
+            const toolMaxTokens = document.getElementById('toolMaxTokens');
+            if (toolMaxTokens) toolMaxTokens.value = cfg.tool_max_tokens;
+            
+            const toolTemperature = document.getElementById('toolTemperature');
+            if (toolTemperature) toolTemperature.value = cfg.tool_temperature;
+            
+            const finalMaxTokens = document.getElementById('finalMaxTokens');
+            if (finalMaxTokens) finalMaxTokens.value = cfg.final_max_tokens;
+            
+            const useToolCalling = document.getElementById('toolsUseToolCalling');
+            if (useToolCalling) useToolCalling.checked = cfg.use_tool_calling;
+            
+            updateToolsConfigStatusText('Loaded');
+        }
+    } catch (e) {
+        console.error('Failed to load tools config:', e);
+        updateToolsConfigStatusText('Error loading');
+    }
+}
+
+async function saveToolsConfig() {
+    const toolsConfig = {
+        reasoning_brevity: document.getElementById('toolsReasoningBrevity').checked,
+        tool_max_tokens: parseInt(document.getElementById('toolMaxTokens').value),
+        tool_temperature: parseFloat(document.getElementById('toolTemperature').value),
+        final_max_tokens: parseInt(document.getElementById('finalMaxTokens').value),
+        use_tool_calling: document.getElementById('toolsUseToolCalling').checked
+    };
+    
+    try {
+        const response = await fetch('/api/tools_config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tools_config: toolsConfig })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            updateToolsConfigStatusText('✅ Saved successfully!');
+            setTimeout(() => updateToolsConfigStatusText('Loaded'), 3000);
+        } else {
+            updateToolsConfigStatusText('❌ Error: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        console.error('Failed to save tools config:', e);
+        updateToolsConfigStatusText('❌ Network error');
+    }
+}
+
+async function resetToolsConfig() {
+    // Reset to defaults
+    const reasoningBrevity = document.getElementById('toolsReasoningBrevity');
+    if (reasoningBrevity) reasoningBrevity.checked = true;
+    
+    const toolMaxTokens = document.getElementById('toolMaxTokens');
+    if (toolMaxTokens) toolMaxTokens.value = 2048;
+    
+    const toolTemperature = document.getElementById('toolTemperature');
+    if (toolTemperature) toolTemperature.value = 0.3;
+    
+    const finalMaxTokens = document.getElementById('finalMaxTokens');
+    if (finalMaxTokens) finalMaxTokens.value = 8192;
+    
+    const useToolCalling = document.getElementById('toolsUseToolCalling');
+    if (useToolCalling) useToolCalling.checked = true;
+    
+    updateToolsConfigStatusText('Reset to defaults - click Save to apply');
+}
+
+function validateToolsConfig() {
+    // No immediate validation needed - server validates on save
+    updateToolsConfigStatusText('Modified - click Save to apply');
+}
+
+function updateToolsConfigStatusText(message) {
+    const el = document.getElementById('toolsConfigStatusText');
+    if (el) {
+        el.textContent = message;
+        el.style.color = message.includes('❌') ? '#f38ba8' : '#a6e3a1';
     }
 }

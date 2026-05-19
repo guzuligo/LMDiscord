@@ -874,33 +874,51 @@ _No open issues._
 
 ---
 
-## Known Bugs (Not Yet Fixed)
+## Recent Fixes
 
-### BUG-007: max_tokens Retry Loop Exits Early (break → continue)
+### BUG-007: max_tokens Retry Loop Exits Early (break → continue) - 2026-05-19
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-007 |
 | **Date** | 2026-05-18 |
-| **Status** | 🔄 Known, Will Fix Later |
+| **Date Solved** | 2026-05-19 |
+| **Status** | ✅ Solved |
 | **Severity** | High |
-| **Description** | The max_tokens retry logic in `message_processor.py` has a `break` statement that exits the loop instead of `continue`, preventing the retry with increased max_tokens from ever executing. |
+| **Description** | The max_tokens retry logic in `message_processor.py` had a `break` statement that exits the loop instead of `continue`, preventing the retry with increased max_tokens from ever executing. |
 | **Root Cause** | In `_process_session()` and `process_active_session()`, after detecting empty response on Turn N (post-tool-processing), the code appends a warning message to `messages_for_lm` but then uses `break` instead of `continue`. The `break` exits the turn loop immediately, so the next iteration (which would use `max_tokens_override`) never runs. |
-| **Evidence** | Logs show `Turn 2: content=''` with `completion_tokens: 2500` (hit max_tokens limit), `finish_reason: "length"`. The retry logic detected the condition but exited the loop before retrying. |
-| **Fix Required** | Change `break` to `continue` at line ~175 in `_process_session()` and line ~290 in `process_active_session()` in `src/discord_bot/message_processor.py` |
-| **Files to Fix** | `src/discord_bot/message_processor.py` |
+| **Fix Applied** | Changed `break` to `continue` at line 167 in `_process_session()` and line 312 in `process_active_session()` in `src/discord_bot/message_processor.py`. This allows the turn loop to continue, which will now execute the retry with doubled max_tokens (up to 8192). |
+| **Files Modified** | `src/discord_bot/message_processor.py` |
 
 ---
 
-### BUG-008: image_compare Fails When Both URLs Point to Same Attachment
+## Known Bugs (Not Yet Fixed)
+
+---
+
+### REASONING-FIX: Model Excessive Reasoning Causing 120s Read Timeout
 
 | Field | Value |
 |-------|-------|
-| **ID** | BUG-008 |
-| **Date** | 2026-05-18 |
-| **Status** | 🔄 Known, Will Fix Later |
-| **Severity** | Low |
-| **Description** | When user provides two URLs that point to the same Discord attachment (one with query params, one without), the second URL fails to download because Discord CDN returns `text/plain` even with Referer header retry. |
-| **Root Cause** | Discord attachment URLs without auth tokens (`.../image.png`) may be inaccessible if the attachment requires authentication. The Referer header retry also fails because the underlying URL is invalid without tokens. |
-| **Evidence** | Logs show: `Retry also got non-image content type: text/plain` for the second URL. Both URLs had the same attachment ID `1505963986271731844`. |
-| **Workaround** | Users should re-upload the second image if they want to compare two different images. The tool correctly falls back to comparing with available images. |
+| **ID** | REASONING-FIX |
+| **Date** | 2026-05-19 |
+| **Date Solved** | 2026-05-19 |
+| **Status** | ✅ Solved |
+| **Severity** | Critical |
+| **Description** | The model (qwen3.6-35b-a3b) was entering extremely long internal reasoning loops (6383 reasoning tokens observed), causing 120-second READ TIMEOUT errors from LM Studio when processing tool calls like `image_compare`. The default max_tokens=2500 was insufficient for the model's extended reasoning. |
+| **Root Cause** | 1) The model's default behavior produces very long internal reasoning before responding. 2) No temperature control for tool-calling turns (temperature was always 0.7). 3) No max_tokens differentiation between tool-calling turns and final responses. 4) No system prompt instruction to keep reasoning brief. |
+| **Fix Applied** | Multi-part fix: |
+| **Fix Details** | 1. **Reasoning Brevity Instruction**: Added critical instructions to system prompt in `message_handler.py` `handle_new_session()` that tell the model to keep reasoning SHORT, respond directly after tool results, and avoid extended chain-of-thought. <br> 2. **Tool-Specific max_tokens**: Modified `_call_lm_studio_via_processor()` in `message_handler.py` to use `tool_max_tokens` (2048) for tool-calling turns and `final_max_tokens` (8192) for final responses after tool results. Detected by checking for `role: "tool"` messages in context. <br> 3. **Lower Tool Temperature**: Tool-calling turns now use `tool_temperature` (0.3) instead of the default 0.7, producing more consistent tool arguments. <br> 4. **Tools Config Web UI**: Added new "⚙️ Tools Config" tab to the web UI with form fields for all settings. <br> 5. **Config Persistence**: Added `tools_config` section to config.py with `get_tools_config()`/`set_tools_config()` methods and API endpoints in app.py. |
+| **Files Modified** | `src/config.py`, `src/app.py`, `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py`, `src/templates/index.html`, `src/static/lm-instances.css`, `src/static/script.js` |
+| **Config Schema** | ```json
+{
+  "tools_config": {
+    "reasoning_brevity": true,
+    "tool_max_tokens": 2048,
+    "tool_temperature": 0.3,
+    "final_max_tokens": 8192,
+    "use_tool_calling": true
+  }
+}
+``` |
+| **Testing** | Requires live testing with image_compare tool to verify timeout no longer occurs. Monitor LM Studio logs for reasoning token count. |

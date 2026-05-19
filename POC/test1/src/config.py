@@ -38,6 +38,13 @@ class Config:
                 "media.discordapp.net"
             ]
         },
+        "tools_config": {
+            "reasoning_brevity": True,
+            "tool_max_tokens": 2048,
+            "tool_temperature": 0.3,
+            "final_max_tokens": 8192,
+            "use_tool_calling": True
+        },
         "servers": {}
     }
     
@@ -361,3 +368,75 @@ class Config:
         if active_id in self._data.get("lm_instances", {}):
             self._data["lm_instances"][active_id]["selected_model"] = value
             self.save()
+
+    # ====================================================================
+    # Tools Configuration Properties
+    # ====================================================================
+
+    @property
+    def tool_reasoning_brevity(self) -> bool:
+        """Get reasoning brevity setting."""
+        return self.get("tools_config", "reasoning_brevity", True)
+
+    @tool_reasoning_brevity.setter
+    def tool_reasoning_brevity(self, value: bool) -> None:
+        """Set reasoning brevity setting."""
+        self.set("tools_config", "reasoning_brevity", value)
+
+    @property
+    def tool_max_tokens(self) -> int:
+        """Get max_tokens for tool-calling requests."""
+        return self.get("tools_config", "tool_max_tokens", 2048)
+
+    @tool_max_tokens.setter
+    def tool_max_tokens(self, value: int) -> None:
+        """Set max_tokens for tool-calling requests."""
+        self.set("tools_config", "tool_max_tokens", value)
+
+    @property
+    def tool_temperature(self) -> float:
+        """Get temperature for tool-calling requests."""
+        return self.get("tools_config", "tool_temperature", 0.3)
+
+    @tool_temperature.setter
+    def tool_temperature(self, value: float) -> None:
+        """Set temperature for tool-calling requests."""
+        self.set("tools_config", "tool_temperature", value)
+
+    @property
+    def final_max_tokens(self) -> int:
+        """Get max_tokens for final response requests."""
+        return self.get("tools_config", "final_max_tokens", 8192)
+
+    @final_max_tokens.setter
+    def final_max_tokens(self, value: int) -> None:
+        """Set max_tokens for final response requests."""
+        self.set("tools_config", "final_max_tokens", value)
+
+    @property
+    def tools_use_tool_calling(self) -> bool:
+        """Get tool calling enabled setting."""
+        return self.get("tools_config", "use_tool_calling", True)
+
+    @tools_use_tool_calling.setter
+    def tools_use_tool_calling(self, value: bool) -> None:
+        """Set tool calling enabled setting."""
+        self.set("tools_config", "use_tool_calling", value)
+
+    def get_tools_config(self) -> dict:
+        """Get all tools configuration as a dict."""
+        tc = self._data.get("tools_config", {})
+        return {
+            "reasoning_brevity": tc.get("reasoning_brevity", True),
+            "tool_max_tokens": tc.get("tool_max_tokens", 2048),
+            "tool_temperature": tc.get("tool_temperature", 0.3),
+            "final_max_tokens": tc.get("final_max_tokens", 8192),
+            "use_tool_calling": tc.get("use_tool_calling", True)
+        }
+
+    def set_tools_config(self, config: dict) -> None:
+        """Set tools configuration from a dict."""
+        self._data.setdefault("tools_config", {})
+        for key, value in config.items():
+            self._data["tools_config"][key] = value
+        self.save()
