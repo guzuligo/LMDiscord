@@ -190,9 +190,14 @@ class ToolCallHandler:
                 )
                 processed_base64 = image_to_base64(compressed_bytes)
 
-                mini_context = self._build_mini_context(processed_base64, output_mime)
+                # Use the user's last message as instruction for focused description
+                image_instruction = self._extract_last_user_message(messages_for_lm)
+                mini_context = self._build_mini_context(
+                    processed_base64, output_mime, image_instruction=image_instruction
+                )
 
-                logger.info(f"[Fix 2c] Using isolated mini-context for image description")
+                logger.info(f"[Fix 2c] Using isolated mini-context for image description"
+                            f"{f' (instruction: {image_instruction[:40]}...)' if image_instruction else ''}")
                 mini_response = await self._get_mini_context_response(
                     mini_context, make_lm_call_func
                 )
@@ -259,9 +264,14 @@ class ToolCallHandler:
                 )
                 processed_base64 = image_to_base64(compressed_bytes)
 
-                mini_context = self._build_mini_context(processed_base64, output_mime)
+                # Use the user's last message as instruction for focused description
+                image_instruction = self._extract_last_user_message(messages_for_lm)
+                mini_context = self._build_mini_context(
+                    processed_base64, output_mime, image_instruction=image_instruction
+                )
 
-                logger.info(f"[Fix 2c] Using isolated mini-context for image description (active session)")
+                logger.info(f"[Fix 2c] Using isolated mini-context for image description (active session)"
+                            f"{f' (instruction: {image_instruction[:40]}...)' if image_instruction else ''}")
                 mini_response = await self._get_mini_context_response(
                     mini_context, make_lm_call_func
                 )
@@ -342,22 +352,53 @@ class ToolCallHandler:
 
     # --- Helper Methods ---
 
-    def _build_mini_context(self, base64_data: str, mime_type: str) -> List[Dict]:
+    def _build_mini_context(
+        self,
+        base64_data: str,
+        mime_type: str,
+        image_instruction: Optional[str] = None
+    ) -> List[Dict]:
         """Build mini-context for image description.
 
         Args:
             base64_data: Base64 encoded image data
             mime_type: MIME type of the image
+            image_instruction: Instruction for the vision model.
+                Defaults to a generic detailed description request.
 
         Returns:
             Mini-context list
         """
+        if image_instruction is None:
+            image_instruction = (
+                "Please describe this image in detail, up to 3-4 sentences. "
+                "Focus on key visual elements, colors, objects, and composition."
+            )
         return [
             {"role": "user", "content": [
-                {"type": "text", "text": "Please describe this image in detail, up to 3-4 sentences."},
+                {"type": "text", "text": image_instruction},
                 {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}}
             ]}
         ]
+
+    def _extract_last_user_message(self, messages_for_lm: List[Dict]) -> Optional[str]:
+        """Extract the last user message text from conversation history.
+
+        Walks backwards through messages and returns the first non-empty
+        user message content found.
+
+        Args:
+            messages_for_lm: Conversation history
+
+        Returns:
+            User message text, or None if not found
+        """
+        for msg in reversed(messages_for_lm):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+        return None
 
     async def _get_mini_context_response(
         self,
@@ -433,12 +474,19 @@ class ToolCallHandler:
             logger.info(f"[image_compare] Comparing {len(image_urls)} images")
 
             from src.tools.builtins.image_compare import ImageCompareTool
+
+            # Use the user's last message as instruction for focused descriptions
+            image_instruction = self._extract_last_user_message(messages_for_lm)
             comparison_text = await ImageCompareTool.compare_images_async(
                 image_urls=image_urls,
                 comparison_prompt=comparison_prompt,
                 safe_downloader=safe_downloader,
-                make_lm_call_func=make_lm_call_func
+                make_lm_call_func=make_lm_call_func,
+                image_instruction=image_instruction
             )
+
+            logger.info(f"[image_compare] Comparison complete"
+                        f"{f' (instruction: {image_instruction[:40]}...)' if image_instruction else ''}")
 
             messages_for_lm.pop()  # Remove assistant message with tool call
             messages_for_lm.append({
@@ -488,12 +536,19 @@ class ToolCallHandler:
             logger.info(f"[image_compare] Comparing {len(image_urls)} images (active session)")
 
             from src.tools.builtins.image_compare import ImageCompareTool
+
+            # Use the user's last message as instruction for focused descriptions
+            image_instruction = self._extract_last_user_message(messages_for_lm)
             comparison_text = await ImageCompareTool.compare_images_async(
                 image_urls=image_urls,
                 comparison_prompt=comparison_prompt,
                 safe_downloader=safe_downloader,
-                make_lm_call_func=make_lm_call_func
+                make_lm_call_func=make_lm_call_func,
+                image_instruction=image_instruction
             )
+
+            logger.info(f"[image_compare] Comparison complete (active session)"
+                        f"{f' (instruction: {image_instruction[:40]}...)' if image_instruction else ''}")
 
             messages_for_lm.pop()  # Remove assistant message with tool call
             messages_for_lm.append({
