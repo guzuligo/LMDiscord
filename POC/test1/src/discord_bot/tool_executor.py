@@ -8,8 +8,10 @@ Handles tool call processing for LM Studio responses:
 """
 
 import asyncio
+import base64
 import json
 import logging
+import re
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -385,37 +387,52 @@ class ToolCallHandler:
         """Extract the last user message text from conversation history.
 
         Walks backwards through messages and returns the first non-empty
-        user message content found.
+        user message content found. Strips URLs and base64 data to prevent
+        context overflow in mini-context calls.
 
         Args:
             messages_for_lm: Conversation history
 
         Returns:
-            User message text, or None if not found
+            Clean user message text (URLs and base64 stripped), or None if not found
         """
         for msg in reversed(messages_for_lm):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and content.strip():
-                    return content.strip()
+                    text = content.strip()
+                    # Strip base64 data patterns (long alphanumeric strings with base64 chars)
+                    text = re.sub(r'[A-Za-z0-9+/]{50,}={0,2}', '', text)
+                    # Strip URLs (http/https/data: schemes)
+                    text = re.sub(r'https?://\S+', '', text)
+                    text = re.sub(r'data:image/[a-z]+;base64,[A-Za-z0-9+/=]+', '', text)
+                    # Strip Discord CDN image URLs
+                    text = re.sub(r'cdn\.discordapp\.com\S+', '', text)
+                    text = re.sub(r'cdn\.discordix\.com\S+', '', text)
+                    # Clean up whitespace
+                    text = re.sub(r'\s+', ' ', text).strip()
+                    if text:
+                        return text
         return None
 
     async def _get_mini_context_response(
         self,
         mini_context: List[Dict],
-        make_lm_call_func: Optional[Any] = None
+        make_lm_call_func: Optional[Any] = None,
+        max_tokens: Optional[int] = None
     ) -> Dict:
         """Get response from LM Studio using mini-context.
 
         Args:
             mini_context: Mini-context for image description
             make_lm_call_func: Optional function to make LM calls
+            max_tokens: Optional max_tokens override for this call
 
         Returns:
             LM Studio response dict
         """
         if make_lm_call_func:
-            return await make_lm_call_func(mini_context, channel_id=None, use_tool_calling=False)
+            return await make_lm_call_func(mini_context, channel_id=None, use_tool_calling=False, max_tokens=max_tokens)
         # Fallback: direct call (should not happen in normal operation)
         logger.warning("No make_lm_call_func provided for mini-context")
         return {"choices": []}
@@ -453,8 +470,8 @@ class ToolCallHandler:
     ) -> Optional[str]:
         """Handle image_compare tool call (new session variant).
 
-        Downloads multiple images, describes each via mini-context, then generates
-        a structured comparison.
+        Downloads multiple images, sends them all in a single multi-image
+        mini-context call, and returns the direct comparison result.
 
         Args:
             func_args: Function arguments JSON string
@@ -475,18 +492,17 @@ class ToolCallHandler:
 
             from src.tools.builtins.image_compare import ImageCompareTool
 
-            # Use the user's last message as instruction for focused descriptions
-            image_instruction = self._extract_last_user_message(messages_for_lm)
+            # Use comparison_prompt from tool args as the comparison instruction.
+            # Pass max_tokens=4096 to accommodate multi-image base64 payloads.
             comparison_text = await ImageCompareTool.compare_images_async(
                 image_urls=image_urls,
                 comparison_prompt=comparison_prompt,
                 safe_downloader=safe_downloader,
                 make_lm_call_func=make_lm_call_func,
-                image_instruction=image_instruction
+                mini_context_max_tokens=4096
             )
 
-            logger.info(f"[image_compare] Comparison complete"
-                        f"{f' (instruction: {image_instruction[:40]}...)' if image_instruction else ''}")
+            logger.info(f"[image_compare] Comparison complete")
 
             messages_for_lm.pop()  # Remove assistant message with tool call
             messages_for_lm.append({
@@ -521,6 +537,9 @@ class ToolCallHandler:
     ) -> None:
         """Handle image_compare tool call (active session variant).
 
+        Downloads multiple images, sends them all in a single multi-image
+        mini-context call, and returns the direct comparison result.
+
         Args:
             func_args: Function arguments JSON string
             messages_for_lm: Messages list to modify
@@ -537,18 +556,17 @@ class ToolCallHandler:
 
             from src.tools.builtins.image_compare import ImageCompareTool
 
-            # Use the user's last message as instruction for focused descriptions
-            image_instruction = self._extract_last_user_message(messages_for_lm)
+            # Use comparison_prompt from tool args as the comparison instruction.
+            # Pass max_tokens=4096 to accommodate multi-image base64 payloads.
             comparison_text = await ImageCompareTool.compare_images_async(
                 image_urls=image_urls,
                 comparison_prompt=comparison_prompt,
                 safe_downloader=safe_downloader,
                 make_lm_call_func=make_lm_call_func,
-                image_instruction=image_instruction
+                mini_context_max_tokens=4096
             )
 
-            logger.info(f"[image_compare] Comparison complete (active session)"
-                        f"{f' (instruction: {image_instruction[:40]}...)' if image_instruction else ''}")
+            logger.info(f"[image_compare] Comparison complete (active session)")
 
             messages_for_lm.pop()  # Remove assistant message with tool call
             messages_for_lm.append({
