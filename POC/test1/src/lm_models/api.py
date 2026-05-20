@@ -10,20 +10,36 @@ logger = logging.getLogger(__name__)
 
 # Module-level instance manager (initialized by app.py)
 _instance_manager: InstanceManager = None  # type: ignore
+_client = None  # type: ignore  # LMStudioClient reference
 
 
-def init_instance_manager(config_path: str) -> InstanceManager:
+def init_instance_manager(config_path: str, client=None) -> InstanceManager:
     """Create and initialize the InstanceManager.
 
     Args:
         config_path: Path to config.json.
+        client: Optional LMStudioClient reference to sync with.
 
     Returns:
         Initialized InstanceManager.
     """
-    global _instance_manager
+    global _instance_manager, _client
     _instance_manager = InstanceManager(config_path=config_path)
+    _client = client
     return _instance_manager
+
+
+def _sync_client_selected_model(mgr: InstanceManager) -> None:
+    """Sync the selected model from InstanceManager to the LMStudioClient.
+
+    Called after model selection to ensure the client uses the newly
+    selected model for subsequent chat requests.
+    """
+    if _client is None:
+        return
+    active = mgr.get_active()
+    if active and active.selected_model:
+        _client.selected_model = active.selected_model
 
 
 def get_instance_manager() -> InstanceManager:
@@ -149,6 +165,10 @@ def register_lm_blueprints(bp: Blueprint) -> None:
         mgr = get_instance_manager()
         if not mgr.select_model(instance_id, model_id):
             return jsonify({"success": False, "error": f"Failed to select model '{model_id}' on '{instance_id}'"}), 400
+        
+        # Sync selected model to the LMStudioClient so it takes effect immediately
+        _sync_client_selected_model(mgr)
+        
         return jsonify({"success": True, "message": f"Model '{model_id}' selected"})
 
     @bp.route("/api/lm_instances/active", methods=["GET"])
@@ -191,4 +211,8 @@ def register_lm_blueprints(bp: Blueprint) -> None:
 
         if not mgr.select_model(active.id, model_id):
             return jsonify({"success": False, "error": f"Failed to select model '{model_id}'"}), 400
+        
+        # Sync selected model to the LMStudioClient so it takes effect immediately
+        _sync_client_selected_model(mgr)
+        
         return jsonify({"success": True, "model": model_id})

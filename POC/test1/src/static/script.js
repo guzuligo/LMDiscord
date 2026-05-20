@@ -390,12 +390,12 @@ function switchTab(tabName) {
         document.getElementById('servers-tab')?.classList.add('active');
         loadServerConfig();
     } else if (tabName === 'lm-instances') {
-        const idx = buttons.length - 2; // second to last (before logs)
+        const idx = buttons.length - 3; // third to last (before tools-config and logs)
         buttons[idx]?.classList.add('active');
         document.getElementById('lm-instances-content')?.classList.add('active');
         loadLmInstances();
     } else if (tabName === 'tools-config') {
-        const idx = buttons.length - 3; // third to last (before logs and tools-config is before logs)
+        const idx = buttons.length - 2; // second to last (before logs)
         buttons[idx]?.classList.add('active');
         document.getElementById('tools-config-tab')?.classList.add('active');
         loadToolsConfig();
