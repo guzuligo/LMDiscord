@@ -158,7 +158,8 @@ class ImageCompareTool(BaseTool):
         image_urls: List[str],
         comparison_prompt: str,
         safe_downloader: Any,
-        make_lm_call_func: Optional[Any] = None
+        make_lm_call_func: Optional[Any] = None,
+        image_instruction: Optional[str] = None
     ) -> str:
         """Async image comparison using mini-context for descriptions.
         
@@ -170,6 +171,8 @@ class ImageCompareTool(BaseTool):
             comparison_prompt: Optional comparison focus
             safe_downloader: SafeImageDownloader instance
             make_lm_call_func: Optional function to make LM calls
+            image_instruction: Instruction for the vision model describing each image.
+                If None, uses a generic description prompt.
             
         Returns:
             Comparison text from LM Studio
@@ -204,9 +207,14 @@ class ImageCompareTool(BaseTool):
                 processed_base64 = image_to_base64(compressed_bytes)
 
                 # Build mini-context for this image
+                if image_instruction is None:
+                    image_instruction = (
+                        "Please describe this image in detail, up to 3-4 sentences. "
+                        "Focus on key visual elements, colors, objects, and composition."
+                    )
                 mini_context = [
                     {"role": "user", "content": [
-                        {"type": "text", "text": "Please describe this image in detail, up to 3-4 sentences. Focus on key visual elements, colors, objects, and composition."},
+                        {"type": "text", "text": image_instruction},
                         {"type": "image_url", "image_url": {"url": f"data:{output_mime};base64,{processed_base64}"}}
                     ]}
                 ]
