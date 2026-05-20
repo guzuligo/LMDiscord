@@ -896,18 +896,53 @@ _No open issues._
 
 ---
 
-### UX-002: Mini-Context Image Descriptions Use Generic Prompt (Not User-Specific)
+### 🆕 BUG-UX-002-REG: image_compare Infinite Loop (image_instruction Extracts Base64 Data)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-UX-002-REG |
+| **Date** | 2026-05-20 |
+| **Date Solved** | 2026-05-20 |
+| **Status** | ✅ Solved |
+| **Severity** | Critical |
+| **Description** | After UX-002 fix, `image_compare` took ~6.5 minutes and got stuck in an infinite re-calling loop. LM Studio logs showed the model re-calling `image_compare` on Turn 2, Turn 3, etc. with empty responses. |
+| **Log Evidence** | ```21:04:59 - [image_compare] Description for image 1: '' ← EMPTY``` and ```Turn 2: tool_calls=1 (re-calls image_compare)``` and ```Turn 3: tool_calls=1 (re-calls image_compare again)``` |
+| **Root Cause** | `_extract_last_user_message()` extracted the Discord-formatted message which includes base64 image data from attachment extraction. This base64 data became the `image_instruction` in the mini-context, causing LM Studio to burn all 2500 tokens on reasoning and return empty content (`finish_reason: "length"`). The empty response then caused LM Studio to re-call `image_compare` indefinitely. |
+| **Fix Applied** | **Two-pronged fix:** <br>1. **`_extract_last_user_message()`** — Added regex to strip base64 data patterns (`[A-Za-z0-9+/]{50,}`), URLs (`http://`, `https://`), Discord CDN URLs (`cdn.discordapp.com`, `cdn.discordix.com`), and `data:image/...;base64,...` schemes before returning the text. <br>2. **`_handle_image_compare`/`_handle_image_compare_active`** — Changed to use `comparison_prompt` from tool arguments as `image_instruction` instead of the extracted user message. This avoids the risk of extracting a message containing URLs/base64 data since the comparison_prompt already contains the proper prompt template. |
+| **Files Modified** | `src/discord_bot/tool_executor.py` (added `re` import, updated `_extract_last_user_message()` with URL/base64 stripping, updated `_handle_image_compare()` and `_handle_image_compare_active()` to use `comparison_prompt` as `image_instruction`) |
+| **Note** | `image_describe` handlers still use `_extract_last_user_message()` for `image_instruction`, but the function now strips URLs/base64 data so it won't cause overflow. |
+
+---
+
+### 🆕 UX-003: image_compare Uses 3-Step Describe-Then-Compare Instead of Direct Multi-Image Comparison
+
+| Field | Value |
+|-------|-------|
+| **ID** | UX-003 |
+| **Date** | 2026-05-20 |
+| **Date Solved** | 2026-05-20 |
+| **Status** | ✅ Solved |
+| **Severity** | Medium (architecture improvement) |
+| **Description** | The `image_compare` tool used a 3-step process: (1) describe image 1 via mini-context, (2) describe image 2 via mini-context, (3) compare the two text descriptions. This approach is suboptimal because the model compares written descriptions rather than seeing both images simultaneously, losing visual information and requiring 3 separate LM calls. |
+| **Root Cause** | Original design chose to describe each image separately then compare descriptions, rather than sending all images in one multi-image mini-context call. |
+| **Fix Applied** | **Complete refactor of `compare_images_async()` in `image_compare.py`:** <br>1. Download all images and build base64 payloads <br>2. Build **single** mini-context with ALL images in the content array: `{"role": "user", "content": [{"type": "text", "text": "Compare these 2 images..."}, {"type": "image_url", ...}, {"type": "image_url", ...}]}` <br>3. Single `make_lm_call_func()` call with `max_tokens=4096` to accommodate multi-image base64 payloads <br>4. Direct comparison result returned — no second step needed <br><br>**`lm_caller.py`**: Added `max_tokens` parameter to `call()` and `_make_lm_call()` for per-call token override. <br>**`tool_executor.py`**: Updated `_handle_image_compare()` and `_handle_image_compare_active()` to pass `mini_context_max_tokens=4096`. Updated `_get_mini_context_response()` to forward `max_tokens` override. <br><br>**Result**: Reduced from 3 LM calls to 1 LM call. Model sees all images simultaneously for direct visual comparison. |
+| **Files Modified** | `src/tools/builtins/image_compare.py` (complete `compare_images_async()` rewrite), `src/discord_bot/lm_caller.py` (max_tokens override), `src/discord_bot/tool_executor.py` (max_tokens forwarding) |
+
+---
+
+### 🆕 UX-002: Mini-Context Image Descriptions Use Generic Prompt (Not User-Specific)
 
 | Field | Value |
 |-------|-------|
 | **ID** | UX-002 |
 | **Date** | 2026-05-19 |
 | **Date Solved** | 2026-05-20 |
-| **Status** | ✅ Solved |
+| **Status** | ✅ Solved (with regression fix) |
 | **Severity** | Low (UX improvement) |
 | **Description** | When LM Studio calls `image_describe` or `image_compare`, the mini-context prompt was always "Please describe this image in detail, up to 3-4 sentences." regardless of what the user actually asked. |
-| **Fix Applied** | Added `image_instruction` parameter to `_build_mini_context()` and `compare_images_async()`. Added `_extract_last_user_message()` helper to extract the last user message from conversation history. All four handlers (`_handle_image_describe`, `_handle_image_describe_active`, `_handle_image_compare`, `_handle_image_compare_active`) now extract the user's message and pass it as `image_instruction`, making the mini-context prompt dynamic and focused on what the user actually asked. Falls back to generic description prompt when no user message is found. |
-| **Files Modified** | `src/discord_bot/tool_executor.py` (added `image_instruction` param, `_extract_last_user_message()` helper, updated all 4 handlers), `src/tools/builtins/image_compare.py` (added `image_instruction` param to `compare_images_async()`) |
+| **Fix Applied** | Added `image_instruction` parameter to `_build_mini_context()` and `compare_images_async()`. Added `_extract_last_user_message()` helper to extract the last user message from conversation history. All four handlers now extract the user's message and pass it as `image_instruction`. Falls back to generic description prompt when no user message is found. |
+| **Regression** | UX-002 introduced BUG-UX-002-REG (infinite loop in image_compare) because the extracted user message contained base64 data. Fixed by stripping URLs/base64 from extracted messages and using `comparison_prompt` for image_compare. |
+| **Files Modified** | `src/discord_bot/tool_executor.py` (added `image_instruction` param, `_extract_last_user_message()` helper with URL/base64 stripping, updated all 4 handlers), `src/tools/builtins/image_compare.py` (added `image_instruction` param to `compare_images_async()`) |
 | **Example** | User: "Is the person in these images the same?" → Mini-context: "Is the person in these images the same?" → Focused description about facial features → Better comparison response |
 
 ---

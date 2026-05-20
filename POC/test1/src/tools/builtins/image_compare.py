@@ -2,8 +2,8 @@
 Image Compare Tool
 
 This module implements a tool for comparing up to 3 images using vision capabilities.
-It downloads multiple images, describes each via mini-context, then generates a
-structured comparison.
+It downloads all images, sends them together in a single multi-image mini-context call,
+and returns the direct comparison result.
 
 Tool Definition:
 - name: "image_compare"
@@ -12,7 +12,7 @@ Tool Definition:
 
 Integration:
 - Used by message_handler to build comparison messages for LM Studio
-- Downloads images safely, describes each, then prompts for comparison
+- Downloads images safely, sends all in one multi-image mini-context call
 """
 
 import json
@@ -30,8 +30,8 @@ DISCORD_CDN_REFERER = "https://discord.com/"
 class ImageCompareTool(BaseTool):
     """Tool for comparing up to 3 images using vision capabilities.
     
-    This tool accepts multiple image URLs, downloads and processes each image,
-    generates descriptions via mini-context, then prompts LM Studio to compare them.
+    This tool accepts multiple image URLs, downloads them, and sends all images
+    together in a single multi-image mini-context call for direct comparison.
     
     Security measures:
     - Max images: 3
@@ -159,20 +159,22 @@ class ImageCompareTool(BaseTool):
         comparison_prompt: str,
         safe_downloader: Any,
         make_lm_call_func: Optional[Any] = None,
-        image_instruction: Optional[str] = None
+        image_instruction: Optional[str] = None,
+        mini_context_max_tokens: int = 4096
     ) -> str:
-        """Async image comparison using mini-context for descriptions.
+        """Async image comparison using a single multi-image mini-context call.
         
-        Downloads all images, describes each via mini-context, then combines
-        descriptions into a comparison prompt for LM Studio.
+        Downloads all images and sends them together in one mini-context message
+        so the model can see all images simultaneously for direct comparison.
         
         Args:
             image_urls: List of 2-3 image URLs
             comparison_prompt: Optional comparison focus
             safe_downloader: SafeImageDownloader instance
             make_lm_call_func: Optional function to make LM calls
-            image_instruction: Instruction for the vision model describing each image.
-                If None, uses a generic description prompt.
+            image_instruction: Deprecated - kept for backward compatibility
+            mini_context_max_tokens: Max tokens for the mini-context call.
+                Increased (default 4096) to accommodate multiple image base64 payloads.
             
         Returns:
             Comparison text from LM Studio
@@ -184,9 +186,10 @@ class ImageCompareTool(BaseTool):
         if len(image_urls) > ImageCompareTool.MAX_IMAGES:
             return f"Maximum {ImageCompareTool.MAX_IMAGES} images allowed for comparison."
 
-        # Step 1: Download and describe each image
-        image_descriptions = []
+        # Step 1: Download all images and build base64 payloads
+        image_payloads = []  # List of (base64_data, mime_type)
         failed_images = []
+        
         for i, url in enumerate(image_urls, 1):
             try:
                 logger.info(f"[image_compare] Downloading image {i}/{len(image_urls)}: {url[:80]}...")
@@ -194,87 +197,64 @@ class ImageCompareTool(BaseTool):
                 raw_bytes = await ImageCompareTool._download_image_with_retry(url, safe_downloader)
                 if raw_bytes is None:
                     failed_images.append(i)
-                    image_descriptions.append(f"Image {i} ({url[:80]}...): Error - could not download this image")
                     continue
                     
                 logger.info(f"[image_compare] Downloaded {len(raw_bytes)} bytes for image {i}")
 
-                # Resize/compress
+                # Resize/compress to reduce token usage
                 compressed_bytes, output_mime = resize_image_bytes(
                     raw_bytes, max_dimension=ImageCompareTool.MAX_DIMENSION,
                     quality=ImageCompareTool.JPEG_QUALITY
                 )
                 processed_base64 = image_to_base64(compressed_bytes)
-
-                # Build mini-context for this image
-                if image_instruction is None:
-                    image_instruction = (
-                        "Please describe this image in detail, up to 3-4 sentences. "
-                        "Focus on key visual elements, colors, objects, and composition."
-                    )
-                mini_context = [
-                    {"role": "user", "content": [
-                        {"type": "text", "text": image_instruction},
-                        {"type": "image_url", "image_url": {"url": f"data:{output_mime};base64,{processed_base64}"}}
-                    ]}
-                ]
-
-                logger.info(f"[image_compare] Getting description for image {i} via mini-context")
-                if make_lm_call_func:
-                    mini_response = await make_lm_call_func(mini_context, channel_id=None, use_tool_calling=False)
-                    choices = mini_response.get("choices", [])
-                    if choices:
-                        desc = choices[0].get("message", {}).get("content", "Could not describe this image.")
-                    else:
-                        desc = "Could not describe this image (no response)."
-                else:
-                    desc = "Could not describe this image (no LM call function)."
-
-                image_descriptions.append(f"Image {i}: {desc}")
-                logger.info(f"[image_compare] Description for image {i}: {repr(desc[:80])}...")
+                image_payloads.append((processed_base64, output_mime))
 
             except Exception as e:
                 logger.error(f"[image_compare] Error processing image {i}: {e}", exc_info=True)
                 failed_images.append(i)
-                image_descriptions.append(f"Image {i}: Error - could not process ({str(e)})")
 
         # Build failure note
         failure_note = ""
         if failed_images:
-            failure_note = f"\n\n⚠️ Note: Images {', '.join(map(str, failed_images))} could not be processed (download error). Comparison is based on available images only."
-
-        # Step 2: Build comparison prompt
-        combined_descriptions = "\n\n".join(image_descriptions)
-
-        if comparison_prompt:
-            comparison_instruction = f"\n\nComparison focus: {comparison_prompt}"
+            effective_count = len(image_urls) - len(failed_images)
+            if effective_count < 2:
+                return f"⚠️ Failed to download images. At least 2 images are required for comparison. Failed images: {', '.join(map(str, failed_images))}."
+            failure_note = f"\n\n⚠️ Note: Images {', '.join(map(str, failed_images))} could not be processed (download error). Comparison is based on the available images only."
+            effective_count = len(image_payloads)
         else:
-            comparison_instruction = "\n\nPlease compare these images, noting similarities, differences, and notable features."
+            effective_count = len(image_payloads)
 
-        effective_count = len(image_urls) - len(failed_images)
+        # Step 2: Build single multi-image mini-context
+        # All images are sent together so the model can see them simultaneously
+        content_parts = []
         
-        comparison_context = [
-            {"role": "system", "content": (
-                "You are an image comparison assistant. You will receive descriptions of multiple images "
-                "and need to provide a structured comparison. Be specific, detailed, and objective."
-            )},
-            {"role": "user", "content": (
-                f"Here are descriptions of {effective_count} images:\n\n"
-                f"{combined_descriptions}"
-                f"{comparison_instruction}\n\n"
-                f"Provide a structured comparison covering:\n"
-                f"1. Overall similarities and differences\n"
-                f"2. Key visual elements in each\n"
-                f"3. Notable patterns or contrasts\n"
-                f"4. Any specific observations based on the comparison focus"
-            )}
-        ]
+        # Build the comparison instruction text
+        if comparison_prompt:
+            comparison_instruction = f"Comparison focus: {comparison_prompt}"
+        else:
+            comparison_instruction = "Compare these images side by side. Note similarities, differences, and notable features. Be specific and detailed."
+        
+        content_parts.append({
+            "type": "text",
+            "text": f"Compare these {effective_count} images. {comparison_instruction}"
+        })
+        
+        # Add all images to the content
+        for i, (base64_data, mime_type) in enumerate(image_payloads, 1):
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}
+            })
+        
+        mini_context = [{"role": "user", "content": content_parts}]
+        
+        logger.info(f"[image_compare] Sending {effective_count} images in single mini-context call")
 
-        # Step 3: Get comparison from LM Studio
-        logger.info(f"[image_compare] Getting comparison from LM Studio")
+        # Step 3: Get comparison from LM Studio (single call)
         if make_lm_call_func:
+            logger.info(f"[image_compare] Calling LM Studio with multi-image mini-context (max_tokens={mini_context_max_tokens})")
             comparison_response = await make_lm_call_func(
-                comparison_context, channel_id=None, use_tool_calling=False
+                mini_context, channel_id=None, use_tool_calling=False, max_tokens=mini_context_max_tokens
             )
             choices = comparison_response.get("choices", [])
             if choices:

@@ -57,7 +57,8 @@ class LMCaller:
         self,
         messages_for_lm: List[Dict],
         channel_id: int,
-        use_tool_calling: Optional[bool] = None
+        use_tool_calling: Optional[bool] = None,
+        max_tokens: Optional[int] = None
     ) -> Dict:
         """Make a call to LM Studio API with global lock.
 
@@ -65,20 +66,24 @@ class LMCaller:
             messages_for_lm: Messages to send to LM Studio
             channel_id: Channel ID for logging
             use_tool_calling: Override default tool calling setting
+            max_tokens: Override default max_tokens for this call
 
         Returns:
             LM Studio API response dict
         """
         use_tc = use_tool_calling if use_tool_calling is not None else self.use_tool_calling
-        return await self._make_lm_call(messages_for_lm, channel_id, use_tc)
+        effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        return await self._make_lm_call(messages_for_lm, channel_id, use_tc, effective_max_tokens)
 
     async def _make_lm_call(
         self,
         messages_for_lm: List[Dict],
         channel_id: int,
-        use_tool_calling: bool
+        use_tool_calling: bool,
+        max_tokens: Optional[int] = None
     ) -> Dict:
         """Internal LM Studio call with lock."""
+        effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
         if self._lm_studio_lock is not None:
             channel_info = f" (channel {channel_id})" if channel_id else ""
             logger.info(f"Waiting for LM Studio lock{channel_info}")
@@ -90,15 +95,15 @@ class LMCaller:
                         self._executor,
                         self.lm_studio_client.chat_with_tools,
                         messages_for_lm, self._tools,
-                        self.temperature, self.max_tokens
+                        self.temperature, effective_max_tokens
                     )
                 else:
                     result = await loop.run_in_executor(
                         self._executor,
-                        lambda: self.lm_studio_client.chat(
-                            messages=messages_for_lm,
-                            temperature=self.temperature,
-                            max_tokens=self.max_tokens
+                        lambda m=messages_for_lm, t=self.temperature, mt=effective_max_tokens: self.lm_studio_client.chat(
+                            messages=m,
+                            temperature=t,
+                            max_tokens=mt
                         )
                     )
                 logger.info(f"Released LM Studio lock{channel_info}")
@@ -111,14 +116,14 @@ class LMCaller:
                     self._executor,
                     self.lm_studio_client.chat_with_tools,
                     messages_for_lm, self._tools,
-                    self.temperature, self.max_tokens
+                    self.temperature, effective_max_tokens
                 )
             else:
                 return await loop.run_in_executor(
                     self._executor,
-                    lambda: self.lm_studio_client.chat(
-                        messages=messages_for_lm,
-                        temperature=self.temperature,
-                        max_tokens=self.max_tokens
+                    lambda m=messages_for_lm, t=self.temperature, mt=effective_max_tokens: self.lm_studio_client.chat(
+                        messages=m,
+                        temperature=t,
+                        max_tokens=mt
                     )
                 )
