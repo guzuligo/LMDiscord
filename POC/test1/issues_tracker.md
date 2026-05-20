@@ -940,3 +940,22 @@ _No open issues._
 }
 ``` |
 | **Testing** | Requires live testing with image_compare tool to verify timeout no longer occurs. Monitor LM Studio logs for reasoning token count. |
+
+---
+
+### 🆕 BUG-010: LM Instance Model Selection Not Activating (Model Doesn't Switch)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-010 |
+| **Date** | 2026-05-20 |
+| **Date Solved** | 2026-05-20 |
+| **Status** | ✅ Solved |
+| **Severity** | Critical |
+| **Description** | When selecting a model from the LM Instances tab dropdown, the model selection was not taking effect. The bot continued using the default/first model instead of the selected one. |
+| **Root Causes** | Three issues were found: <br>1. **manager.py**: `select_model()` required `model_id` to be in `inst.available_models`, but discovery only happens when "Test" is clicked. Without discovery, the list is empty, so all selections were rejected. <br>2. **lm_studio_client.py**: `connect()` always picked the first available model from LM Studio instead of respecting `_selected_model`. <br>3. **api.py + app.py**: The `selected_model` was saved to config but never synced to the `LMStudioClient` instance. The client's `_selected_model` attribute was never updated after startup. |
+| **Fix Applied** | **Fix #1** — `manager.py`: Removed `available_models` check from `select_model()`. Any model can now be selected (discovery is optional browsing only). <br>**Fix #2** — `lm_studio_client.py`: Updated `connect()` to prioritize `_selected_model` over first available model. Also updated the `selected_model` setter to immediately update `_model` when already connected, so no reconnect is needed. <br>**Fix #3** — `api.py`: Added `_sync_client_selected_model()` helper and called it from both `select_model` and `set_active_model` endpoints. Added `_client` global to `api.py`. <br>**Fix #4** — `app.py`: Updated `init_instance_manager()` call to pass the `client` reference so the sync can work. |
+| **Files Modified** | `src/lm_models/manager.py` (removed available_models check), `src/lm_studio_client.py` (connect() + setter), `src/lm_models/api.py` (added _sync_client_selected_model, _client global), `src/app.py` (pass client to init_instance_manager) |
+| **Workflow** | Activate instance → Test (discover models) → Select model → Works immediately (no reconnect needed) |
+
+---

@@ -593,10 +593,10 @@ def get_debug_token_metrics():
 
 # ==================== LM Instance Manager Initialization ====================
 
-# Initialize the LM instance manager with config path
+# Initialize the LM instance manager with config path and client reference
 # Path: src/app.py → src/ → test1/ → config.json
 _config_path = str(Path(__file__).parent.parent / "config.json")
-init_instance_manager(_config_path)
+init_instance_manager(_config_path, client=client)
 
 # ==================== Tools Config Settings ====================
 

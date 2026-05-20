@@ -265,15 +265,15 @@ class InstanceManager:
 
         Args:
             instance_id: Instance ID.
-            model_id: Model ID to select.
+            model_id: Model ID to select. Can be any string — does not need
+                      to be in available_models. Discovery is optional and
+                      used only for browsing.
 
         Returns:
-            True if selected, False if not in available list.
+            True if selected, False if instance not found.
         """
         inst = self._instances.get(instance_id)
         if not inst:
-            return False
-        if model_id not in inst.available_models:
             return False
         inst.selected_model = model_id
         self._save()

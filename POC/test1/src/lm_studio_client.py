@@ -37,8 +37,14 @@ class LMStudioClient:
 
     @selected_model.setter
     def selected_model(self, value: str) -> None:
-        """Set the selected model name."""
+        """Set the selected model name.
+        
+        If already connected, also updates _model immediately so the
+        new model takes effect without requiring a reconnect.
+        """
         self._selected_model = value
+        if self._is_connected and value:
+            self._model = value
 
     def switch_to(self, hostname: str, port: int = 1234) -> bool:
         """Switch to a different LM Studio instance.
@@ -83,6 +89,11 @@ class LMStudioClient:
     def connect(self) -> bool:
         """Test connection to LM Studio and fetch available models.
         
+        If a selected_model is configured (non-empty), it will be used
+        as the active model regardless of what LM Studio has loaded.
+        When no selected_model is set, falls back to the first available
+        model from LM Studio.
+        
         Returns:
             True if connection successful, False otherwise
         """
@@ -94,12 +105,14 @@ class LMStudioClient:
             if response.status_code == 200:
                 data = response.json()
                 self._models = [m.get("id", "") for m in data.get("data", [])]
-                if self._models:
-                    # Prefer selected_model if it's in the available list
-                    if self._selected_model and self._selected_model in self._models:
-                        self._model = self._selected_model
-                    else:
-                        self._model = self._models[0]
+                
+                # Priority: (1) explicit selected_model, (2) first available
+                if self._selected_model:
+                    # Use the configured selected model even if not in discovered list
+                    # (LM Studio may have reloaded a different model)
+                    self._model = self._selected_model
+                elif self._models:
+                    self._model = self._models[0]
                 self._is_connected = True
                 return True
             return False
