@@ -157,13 +157,55 @@ This file tracks the implementation progress of the Memory Module for the Discor
 
 ---
 
+## Planned Features (Concepts Pending Refinement)
+
+### Wake-Up Memory System (CONCEPT-001)
+
+**Status**: 💡 Concept - Not yet implemented
+
+A wake-up memory system that persists context across sessions. After each session end, a "sleep procedure" updates the wake-up memory containing a compact summary of what should be remembered for next sessions.
+
+**Types**:
+- **General Wake-Up Memory** - Bot-wide summary
+- **Per-User Wake-Up Memory** - Per-user personalized context
+
+**Sleep Procedure**:
+```
+Session End → Extract topics → Load wake-up memory → Merge → Summarize → Store
+```
+
+**Sources**: Previous wake-up memory, Last conversation, Explicit references ("remember X")
+
+**Schema**: `wake_up_memory` table with `memory_type`, `content`, `last_updated`, `version`
+
+**Open Questions**:
+1. LM-generated or rule-based? (Recommend: LM-generated)
+2. Per-channel wake-up memory too? (Currently: general + per-user)
+3. Max size? (Suggest: ~500 chars)
+4. User query/modify access?
+
+---
+
+### Memory Update Counter (CONCEPT-002)
+
+**Status**: 💡 Concept - Not yet implemented
+
+Add an update counter to each memory. Frequently updated memories are likely more important.
+
+**Schema Updates**: Add `update_count` INTEGER DEFAULT 0, `last_updated` TIMESTAMP to `memories` table
+
+**Importance Formula**: `importance = (update_count * 0.4) + (recency_score * 0.3) + (explicit_weight * 0.3)`
+
+---
+
 ## Next Steps
 
-1. **Complete Phase 1**: Define SQLite schema and extend existing code
-2. **Enhance memory_manager.py**: Add CRUD operations with proper schema
-3. **Enhance memorylite.py**: Add connection pooling and WAL mode
-4. **Create REQ-003**: Design LM Studio tool interface
-5. **Create REQ-004**: Plan Discord bot integration
+1. **Refine CONCEPT-001/002**: Review wake-up memory and update counter ideas, improve or modify
+2. **Complete Phase 1**: Define SQLite schema and extend existing code
+3. **Enhance memory_manager.py**: Add CRUD operations with proper schema
+4. **Enhance memorylite.py**: Add connection pooling and WAL mode
+5. **Create REQ-003**: Design LM Studio tool interface
+6. **Create REQ-004**: Plan Discord bot integration
 
 ---
 
