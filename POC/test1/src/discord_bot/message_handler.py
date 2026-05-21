@@ -59,7 +59,8 @@ class MessageHandler:
         reasoning_brevity: bool = True,
         tool_max_tokens: int = 2048,
         tool_temperature: float = 0.3,
-        final_max_tokens: int = 8192
+        final_max_tokens: int = 8192,
+        bot_instance: Any = None
     ):
         """Initialize message handler."""
         self.lm_studio_client = lm_studio_client
@@ -70,6 +71,7 @@ class MessageHandler:
         self._tools = tools or [self.END_SESSION_TOOL]
         self._executor = executor or ThreadPoolExecutor(max_workers=2)
         self._lm_studio_lock = lm_studio_lock
+        self._bot_instance = bot_instance
 
         # Tools config (REASONING-FIX)
         self._reasoning_brevity = reasoning_brevity
@@ -99,7 +101,8 @@ class MessageHandler:
             tools=self._tools,
             executor=self._executor,
             lm_studio_lock=lm_studio_lock,
-            safe_downloader=self._safe_downloader
+            safe_downloader=self._safe_downloader,
+            bot_instance=bot_instance
         )
 
     @property
@@ -214,10 +217,18 @@ class MessageHandler:
             "You have access to tools:\n"
             "- 'image_describe': Call this ONLY when the user explicitly asks for an image to be described, analyzed, or identified. Pass the image URL directly to this tool — it will be automatically downloaded and processed.\n"
             "- 'image_compare': Call this when the user wants to compare 2-3 images side by side. Pass image URLs as an array. Optionally include a comparison_prompt for specific comparison focus.\n"
+            "- 'channel_search': Call this to read recent messages from Discord channels to gather context for conversation. Returns a list of recent messages with author, content, timestamp, and reply info. Use this when you need to understand ongoing conversations, find specific information, or gather context before responding.\n"
+            "  Channel specification (the 'channel' parameter):\n"
+            "    - '#123456789' — search by channel ID (e.g., '#1503498099081871470')\n"
+            "    - '@channelname' — search by channel name (e.g., '@c3', '@general')\n"
+            "    - 'this' — search the current active session channel\n"
+            "    - leave empty or omit — search ALL visible channels\n"
+            "  Optional parameters: limit (default 15, max 50), search_query (text filter), username (author filter), compress_long (truncate long messages)\n"
             "- If the user sends an image but does NOT explicitly ask for it to be described, respond naturally about the image in text.\n"
             "- 'end_session': Call this when the conversation is ending and you want to say goodbye\n\n"
             "IMPORTANT: Do not call image_describe for every image. Only call it when the user clearly wants a detailed description.\n"
             "IMPORTANT: After calling image_describe, you will receive the description in the tool result. DO NOT call image_describe again for the same image. Use the description to respond.\n"
+            "IMPORTANT: For channel_search, you can use '#ID' for channel ID, '@name' for channel name, 'this' for current channel, or leave empty to search all channels. You do NOT need to ask the user for channel IDs.\n"
         )
         
         # REASONING-FIX: Add reasoning brevity instruction if enabled

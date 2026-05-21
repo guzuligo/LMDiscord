@@ -23,7 +23,7 @@ This file tracks the implementation progress of the Memory Module for the Discor
 |------|--------|-------|-------|
 | Basic memory storage | 🔄 In Progress | `memory_manager.py` | Initial implementation exists |
 | SQLite integration | 🔄 In Progress | `memorylite.py` | SQLite backend exists |
-| Design SQLite schema | ⏳ Planned | - | Users, Memories, Sessions tables |
+| Design SQLite schema | ✅ Completed | - | Schema v2.0 finalized (2026-05-21) |
 | Implement storage backend | ⏳ Planned | - | Connection pooling, WAL mode |
 | Implement core memory engine | ⏳ Planned | - | CRUD operations, recall |
 | Implement user store | ⏳ Planned | - | User identity persistence |
@@ -150,6 +150,25 @@ This file tracks the implementation progress of the Memory Module for the Discor
 ## Recent Changes
 
 ### 2026-05-21
+- **Schema v2.0 finalized** - Complete redesign of database schema based on requirements:
+  - Multi-user memories via `memory_users` junction table
+  - Concise 5-type system: `fact`, `preference`, `context`, `relationship`, `deprecated`
+  - Importance score for dual-purpose (pruning + search)
+  - Memory lifecycle tracking with `status` column
+  - Expiration-based validation with `expires_at` column
+- **MemoryBot Architecture (CONCEPT-003) documented** - Specialist sub-bot design for memory search:
+  - Architecture: Main Bot → MemoryBot → Memory System → Distilled Results → Main Bot
+  - Lifecycle: Activation → Session → Completion → Termination → Flush & Restart
+  - Communication protocol via shared memory
+  - System prompt template with completion signals
+  - Design decisions: Name=MemoryBot, Synchronous, Single per session
+- Updated README.md with complete schema documentation + MemoryBot architecture
+- Updated issues_tracker.md with CONCEPT-003 MemoryBot documentation
+- REQ-001 (Define Memory Schema) marked as ✅ Solved
+- CONCEPT-002 (Memory Update Counter) marked as ✅ Implemented in Schema
+- CONCEPT-003 (MemoryBot) marked as 💡 Documented
+
+### Previous Updates
 - Created README.md with module description
 - Created issues_tracker.md with known limitations
 - Created progress.md with implementation roadmap
@@ -186,26 +205,69 @@ Session End → Extract topics → Load wake-up memory → Merge → Summarize �
 
 ---
 
+### MemoryBot Architecture (CONCEPT-003)
+
+**Status**: 💡 Documented - Not yet implemented
+
+MemoryBot is a specialized sub-bot with fresh isolated context that handles memory search operations.
+
+**Key Components**:
+- Architecture: Main Bot → MemoryBot → Memory System → Distilled Results
+- Lifecycle: Activation → Session → Completion → Termination → Flush & Restart
+- Communication via shared memory protocol
+- Completion signals: `[SEARCH_COMPLETE]`, `[NO_RELEVANT_MEMORIES]`, `[SESSION_END]`
+
+**Design Decisions**:
+- Name: MemoryBot
+- Mode: Synchronous (Main Bot waits)
+- Scope: One shared MemoryBot per session
+- Fallback: Direct memory tool calls if MemoryBot unavailable
+
+---
+
 ### Memory Update Counter (CONCEPT-002)
 
-**Status**: 💡 Concept - Not yet implemented
+**Status**: ✅ Implemented in Schema
 
 Add an update counter to each memory. Frequently updated memories are likely more important.
 
-**Schema Updates**: Add `update_count` INTEGER DEFAULT 0, `last_updated` TIMESTAMP to `memories` table
+**Schema Implementation** (already in `memories` table):
+- `update_count` INTEGER DEFAULT 0
+- `importance` REAL (0.0 - 1.0)
+- `updated_at` TIMESTAMP
 
-**Importance Formula**: `importance = (update_count * 0.4) + (recency_score * 0.3) + (explicit_weight * 0.3)`
+**Importance Formula**:
+```
+importance = (update_count_normalized * 0.4) + (recency_score * 0.3) + (explicit_weight * 0.3)
+```
 
 ---
 
 ## Next Steps
 
-1. **Refine CONCEPT-001/002**: Review wake-up memory and update counter ideas, improve or modify
-2. **Complete Phase 1**: Define SQLite schema and extend existing code
+1. **Complete Phase 1**: Define SQLite schema ✅ (done) → Extend existing code
+2. **Implement memorylite.py**: Create tables from finalized schema v2.0
 3. **Enhance memory_manager.py**: Add CRUD operations with proper schema
-4. **Enhance memorylite.py**: Add connection pooling and WAL mode
-5. **Create REQ-003**: Design LM Studio tool interface
-6. **Create REQ-004**: Plan Discord bot integration
+4. **Create REQ-003**: Design LM Studio tool interface
+5. **Create REQ-004**: Plan Discord bot integration
+6. **Plan MemoryBot (CONCEPT-003)**: Design MemoryBot implementation details
+
+---
+
+## MemoryBot Implementation Plan (CONCEPT-003)
+
+### Phase: Future (Not Started)
+
+| Task | Status | Files | Notes |
+|------|--------|-------|-------|
+| Design MemoryBot architecture | ✅ Documented | - | Concept documented in README and issues_tracker |
+| Implement MemoryBot core | ⏳ Planned | `memorybot.py` | Main MemoryBot logic, context management |
+| Design system prompts | ⏳ Planned | `memorybot_prompt.py` | Prompt templates, completion signals |
+| Route memory queries | ⏳ Planned | `message_handler.py` | Detect and route memory search requests |
+| Support concurrent LM calls | ⏳ Planned | `api.py` | Main Bot + MemoryBot parallel execution |
+| Implement context flush logic | ⏳ Planned | `memorybot.py` | Relevance detection, context clearing |
+
+**Estimated Effort**: 3-5 days
 
 ---
 

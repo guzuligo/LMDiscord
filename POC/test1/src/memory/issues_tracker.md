@@ -59,10 +59,10 @@ _No issues solved yet._
 |-------|-------|
 | **ID** | REQ-001 |
 | **Date** | 2026-05-21 |
-| **Status** | ⏳ Planned |
+| **Status** | ✅ Solved |
 | **Severity** | Medium |
 | **Description** | Design the SQLite schema for users, memories, sessions, and associations. |
-| **Requirements** | 1. Users table with immutable user_id 2. Memories table with type, importance, expiration 3. Sessions table with topic tracking 4. Indexes for efficient recall queries |
+| **Solution** | Finalized schema with 5 tables: `memories`, `memory_users` (junction), `users`, `sessions`, `wake_up_memory`. Supports multi-user memories via junction table, memory lifecycle tracking (active/deprecated/expired/superseded), and importance scoring for both pruning and search. |
 
 ---
 
@@ -122,6 +122,105 @@ _No issues solved yet._
 
 ## Feature Concepts (Pending Refinement)
 
+### CONCEPT-003: MemoryBot Architecture
+
+| Field | Value |
+|-------|-------|
+| **ID** | CONCEPT-003 |
+| **Date** | 2026-05-21 |
+| **Status** | 💡 Concept - Documented |
+| **Severity** | N/A (Feature concept, not a bug) |
+| **Description** | Implement a specialized MemoryBot sub-bot with fresh isolated context that handles memory search operations, protecting the main conversation context from being saturated with irrelevant memory results. |
+
+#### Architecture
+
+```
+Main Bot (holds main conversation context)
+    ↓ requests memory search for: "User's current project details"
+MemoryBot (fresh isolated context, has memory tools)
+    ↓ calls memory_recall with broad queries
+Memory System (returns many results, most irrelevant)
+MemoryBot (filters noise, extracts relevant findings)
+    ↓ returns distilled results
+Main Bot (receives only relevant info, context preserved)
+```
+
+#### MemoryBot Lifecycle
+
+1. **Activation**: Triggered when Main Bot needs memory information
+2. **Session**: Fresh context, calls memory tools, gets polluted with irrelevant results
+3. **Completion**: MemoryBot signals "job done" when search is complete
+4. **Termination**: On new prompt, MemoryBot decides if existing context is relevant
+5. **Flush & Restart**: If irrelevant, MemoryBot clears context and starts fresh
+
+#### Communication Protocol (Shared Memory)
+
+```
+Main Bot writes: {query, priority, session_id}
+MemoryBot reads → searches → writes: {findings, confidence, completed}
+Main Bot reads findings → continues conversation
+```
+
+#### MemoryBot System Prompt Template
+
+```
+You are MemoryBot, a specialized memory search assistant.
+Your job: Find relevant memories for the Main Bot's query.
+Tools available: memory_recall, memory_create, memory_update
+
+When you have sufficient relevant findings, respond with:
+[SEARCH_COMPLETE] <summary of findings>
+
+If no relevant memories exist, respond with:
+[NO_RELEVANT_MEMORIES]
+```
+
+#### Completion Signal Options
+
+- **Explicit marker**: `[SEARCH_COMPLETE]` or `[SEARCH_DONE]`
+- **Confidence threshold**: MemoryBot self-evaluates before returning
+- **Main Bot approval**: Main Bot can ask follow-up questions to MemoryBot
+
+#### When to Flush Context
+
+- **Keyword/topic mismatch** between new query and existing findings
+- **User changes subject** entirely (e.g., from "project details" to "weather")
+- **Time-based**: MemoryBot context expires after N seconds
+
+#### Multi-Turn MemoryBot (Optional)
+
+For complex queries, allow Main Bot to have a brief back-and-forth:
+
+```
+Main: "Find info about user's database setup"
+MemoryBot: "Found 3 memories about PostgreSQL configuration"
+Main: "Also check if there's anything about backup procedures"
+MemoryBot: "[SEARCH_COMPLETE] Found 1 memory about daily backups"
+Main: "Done, thanks"
+MemoryBot: "[SESSION_END]"
+```
+
+#### Design Decisions (Final)
+
+| Decision | Choice |
+|----------|--------|
+| **Name** | MemoryBot (previously considered: memoryLiberian, sub_bot) |
+| **Single vs Multiple** | One shared MemoryBot per session |
+| **Synchronous vs Async** | Synchronous - Main Bot waits for response |
+| **Fallback** | If MemoryBot unavailable, Main Bot calls memory tools directly |
+| **MemoryBot memory** | TBD - Should MemoryBot remember search patterns? |
+
+#### Planned Files
+
+| File | Purpose |
+|------|---------|
+| `src/memory/memorybot.py` | MemoryBot core logic |
+| `src/memory/memorybot_prompt.py` | System prompt templates |
+| `src/discord_bot/message_handler.py` | Route memory queries to MemoryBot |
+| `src/lm_models/api.py` | Support parallel/concurrent LM calls |
+
+---
+
 ### CONCEPT-001: Wake-Up Memory System
 
 | Field | Value |
@@ -139,7 +238,7 @@ _No issues solved yet._
 | **General Wake-Up Memory** | Bot-wide | High-level summary of what the bot should remember across ALL users/servers |
 | **Per-User Wake-Up Memory** | Per user | Personalized context about a specific user's ongoing topics, preferences, recent activities |
 
-#### Sleep Procedure Flow
+#### Sleep procedure Flow
 
 ```
 Session End (end_session tool or timeout)
@@ -190,8 +289,8 @@ Wake-up memory updated, ready for next session
 |-------|-------|
 | **ID** | CONCEPT-002 |
 | **Date** | 2026-05-21 |
-| **Status** | 💡 Concept - Pending Refinement |
-| **Severity** | N/A (Feature concept, not a bug) |
+| **Status** | ✅ Implemented in Schema |
+| **Severity** | N/A (Feature concept, now part of schema) |
 | **Description** | Add an update counter to each memory. Frequently updated memories are likely more important (actively relevant, being refined, high priority for retention). |
 
 #### Implementation
@@ -205,28 +304,53 @@ class Memory:
     importance: float  # Derived from update_count, recency, etc.
 ```
 
-#### Importance Scoring Formula (Initial)
+#### Importance Scoring Formula (Final)
 
 ```
-importance = (update_count * 0.4) + (recency_score * 0.3) + (explicit_weight * 0.3)
+importance = (update_count_normalized * 0.4) + (recency_score * 0.3) + (explicit_weight * 0.3)
 ```
 
 Where:
-- `update_count` = how many times memory was modified
-- `recency_score` = 1.0 for today, decays over time
-- `explicit_weight` = user-set weight (e.g., "this is important")
+- `update_count_normalized` = `min(update_count / max_expected_updates, 1.0)`
+- `recency_score` = `max(0, 1 - days_since_update / max_days)`
+- `explicit_weight` = user-set weight (defaults to 0.5)
 
-#### Schema Updates for `memories` Table
+#### Schema Implementation
 
-Add columns:
+Already included in `memories` table:
 - `update_count` INTEGER DEFAULT 0
-- `last_updated` TIMESTAMP (separate from created_at)
+- `importance` REAL (0.0 - 1.0)
+- `updated_at` TIMESTAMP
 
 #### Benefits
 
 - Frequently updated memories automatically get higher importance
 - Helps pruning decisions (keep frequently modified memories)
 - Provides signal for memory fusion (similar memories with high update counts)
+- Enables search filtering by update frequency
+
+---
+
+## Memory Schema Evolution Notes
+
+### Schema Version: 2.0 (2026-05-21)
+
+**Key Design Decisions**:
+
+1. **Multi-user memories**: `memory_users` junction table enables many-to-many relationship between memories and users, supporting conversations with multiple participants.
+
+2. **Concise memory types** (5 types):
+   - `fact` - Verified factual information
+   - `preference` - User preferences
+   - `context` - Temporary situational information
+   - `relationship` - Connections between entities
+   - `deprecated` - No longer valid information
+
+3. **Importance dual-purpose**: Score used for both pruning priority and search relevance ranking.
+
+4. **Memory lifecycle tracking**: `status` column tracks memory state transitions (active → deprecated/expired/superseded).
+
+5. **Expiration-based validation**: `expires_at` column enables automatic validity checking of memories.
 
 ---
 
@@ -269,3 +393,4 @@ When reporting bugs, use this format:
 | 🔄 Open | Issue being worked on |
 | ✅ Solved | Issue resolved and verified |
 | ❌ Won't Fix | Issue acknowledged but not actionable |
+| 💡 Concept | Feature concept, pending refinement |

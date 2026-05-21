@@ -30,7 +30,8 @@ class MessageProcessor:
         tools: Optional[List[Dict[str, Any]]] = None,
         executor: Any = None,
         lm_studio_lock: Optional[Any] = None,
-        safe_downloader: Optional[Any] = None
+        safe_downloader: Optional[Any] = None,
+        bot_instance: Any = None
     ):
         """Initialize message processor."""
         self.lm_studio_client = lm_studio_client
@@ -39,6 +40,7 @@ class MessageProcessor:
         self.use_tool_calling = use_tool_calling
         self._tools = tools or []
         self._safe_downloader = safe_downloader
+        self._bot_instance = bot_instance
         self._tool_call_handler = ToolCallHandler()
         self._lm_caller = LMCaller(
             lm_studio_client=lm_studio_client,
@@ -171,7 +173,8 @@ class MessageProcessor:
                 response_text = await self._tool_call_handler.process_tool_calls(
                     tool_calls, messages_for_lm, channel, turn,
                     self._safe_downloader,
-                    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw)
+                    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
+                    get_bot_instance=lambda: self._bot_instance
                 )
 
                 if response_text is None and tool_calls:
@@ -251,7 +254,12 @@ class MessageProcessor:
                 messages_for_lm = [messages_for_lm[0]] + messages_for_lm[-(MAX_HISTORY_MESSAGES - 1):]
                 logger.info(f"Truncated conversation history to {len(messages_for_lm)} messages")
 
-            for turn in range(3):
+            # Track total tool calls to prevent infinite tool-calling loops
+            total_tool_calls_in_session = 0
+            MAX_TOOL_CALLS_PER_SESSION = 3
+            force_response_break = False  # Flag to indicate we broke due to max tool calls
+
+            for turn in range(4):  # Allow 4 turns: 3 tool calls + 1 final response
                 logger.info(f"Active session turn {turn + 1} for channel {channel_id}")
                 if turn > 0:
                     await typing_callback(message.channel)
@@ -316,7 +324,8 @@ class MessageProcessor:
                 end_session_result = await self._tool_call_handler.process_tool_calls_active(
                     tool_calls, messages_for_lm, turn,
                     self._safe_downloader,
-                    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw)
+                    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
+                    get_bot_instance=lambda: self._bot_instance
                 )
 
                 if end_session_result:
@@ -326,6 +335,18 @@ class MessageProcessor:
                     break
 
                 final_tool_calls = tool_calls
+
+                # Track total tool calls and break if too many (prevents infinite loops)
+                total_tool_calls_in_session += len(tool_calls) if tool_calls else 0
+                if total_tool_calls_in_session >= MAX_TOOL_CALLS_PER_SESSION:
+                    logger.warning(f"Max tool calls ({MAX_TOOL_CALLS_PER_SESSION}) reached for channel {channel_id}, forcing response")
+                    # Add a hint message to prompt the model to respond
+                    messages_for_lm.append({
+                        "role": "user",
+                        "content": "You have enough information. Please respond to the user now with your answer. Do NOT call any more tools."
+                    })
+                    force_response_break = True
+                    break
 
             if response_text and len(response_text) > 2000:
                 response_text = response_text[:1997] + "..."
