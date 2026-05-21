@@ -1,4 +1,3 @@
-
 # Implementation Progress - POC: test1
 
 ## Recent Fixes (2026-05-19)
@@ -31,6 +30,100 @@
 
 ---
 
+## Potential Issues (To Monitor) - Added 2026-05-21
+
+### PENDING-001: Error Handling in channel.send() After LM Studio Failures
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-001 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | In `message_processor.py`, when a `ConnectionError` or general `Exception` occurs during LM Studio response, `await channel.send(response_text)` is called without error handling. If the send fails (e.g., channel deleted, bot missing permissions, Discord API error), the error propagates unhandled. |
+| **Code Location** | `src/discord_bot/message_processor.py` → `_process_session()` lines 184-201 |
+| **Recommended Fix** | Wrap `channel.send()` in try/except to handle `discord.HTTPException`, `discord.Forbidden`, `discord.NotFound` gracefully. |
+| **Files To Modify** | `src/discord_bot/message_processor.py` |
+
+---
+
+### PENDING-002: Hardcoded Turn Limit in Message Processing (range(3))
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-002 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | Both `_process_session()` and `process_active_session()` use `for turn in range(3)` which hard-codes a maximum of 3 turns for tool calling. If a tool requires more than 2 retries, the loop exits silently. |
+| **Code Location** | `src/discord_bot/message_processor.py` → `_process_session()` line 106, `process_active_session()` line 254 |
+| **Recommended Fix** | Make the turn limit configurable (e.g., `max_tool_turns=5` parameter) or increase the default. |
+| **Files To Modify** | `src/discord_bot/message_processor.py` |
+
+---
+
+### PENDING-003: Config Path Dependency Hardcoded
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-003 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | Config path in `app.py` is computed as `Path(__file__).parent.parent / "config.json"` which assumes a specific project structure. |
+| **Code Location** | `src/app.py` line 598 |
+| **Recommended Fix** | Use an environment variable (e.g., `LM_CONFIG_PATH`) with fallback to the default path. |
+| **Files To Modify** | `src/app.py` |
+
+---
+
+### PENDING-004: Session State Consistency on Processing Failure
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-004 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | In `bot_core.py` `_process_active_session_batch()`, `self._session_manager.update_activity(channel_id)` is called before processing. If processing fails and the lock is released in the except block, there's no guarantee about session state consistency. |
+| **Code Location** | `src/discord_bot/bot_core.py` → `_process_active_session_batch()` lines 532, 580-586 |
+| **Recommended Fix** | Consider updating session activity only after successful processing, or use a try/finally pattern. |
+| **Files To Modify** | `src/discord_bot/bot_core.py` |
+
+---
+
+### PENDING-005: Missing src/utils.py Import Verification
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-005 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Medium |
+| **Description** | `tool_executor.py` imports `from src.utils import resize_image_bytes, image_to_base64`. This import chain should be verified to ensure image processing doesn't fail at runtime with ImportError. |
+| **Code Location** | `src/discord_bot/tool_executor.py` lines 189, 263, 319 |
+| **Recommended Fix** | Add a startup verification check in `app.py` or add unit tests for the image processing pipeline. |
+| **Files To Verify** | `src/utils.py`, `src/discord_bot/tool_executor.py` |
+
+---
+
+## Memory Manager Sub-Project (Planned)
+
+### FEAT-005: Memory Integration with memorylite - Restructured as Standalone Sub-Project
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-005 |
+| **Date** | 2026-05-21 |
+| **Status** | ⏳ Planned - Restructured as `memory_manager` sub-project |
+| **Description** | The memory integration feature was originally planned as a simple module under `src/memory/`. Due to its complexity and scope (entire memory system with SQLite persistence, user tracking, session association, and LM Studio tool calling), it has been restructured as a standalone sub-project under `memory_manager/` with its own documentation, issue tracking, and progress tracking. |
+| **New Sub-Project Structure** | ``` memory_manager/ ├── README.md              - Description and architecture overview ├── issues_tracker.md      - Issue tracking for memory manager ├── progress.md            - Implementation progress tracking ``` |
+| **Planned Features** | 1. User identity persistence across sessions 2. Per-channel conversation memory 3. Per-server memory isolation 4. Post-session memory creation 5. LM Studio tool calling for memory recall 6. SQLite-based persistent storage 7. Memory summarization and pruning |
+| **Integration Points** | - `src/discord_bot/session_manager.py` - Session lifecycle hooks  - `src/discord_bot/bot_core.py` - Memory tool registration  - `src/tools/builtins/memory_tool.py` - Existing memory tool (to be refactored)  - `src/memory/memorylite.py` - Existing memorylite wrapper (to be moved) |
+| **Files Created** | `memory_manager/README.md`, `memory_manager/issues_tracker.md`, `memory_manager/progress.md` |
+
+---
+
 ## Known UX Improvements (Not Yet Fixed)
 
 ### UX-002: Mini-Context Image Descriptions Use Generic Prompt (Not User-Specific)
@@ -46,32 +139,6 @@
 | **Desired Behavior** | Mini-context should extract the user's question from conversation history and rephrase the prompt to focus on what the user is asking about → Targeted description returned → Better comparison/response |
 | **Fix Required** | 1. Modify `_build_mini_context()` in `tool_executor.py` to accept optional `user_context` parameter 2. Extract user's last message from `messages_for_lm` history in `_handle_image_describe()` and `_handle_image_compare()` 3. Pass user context through to mini-context so prompt becomes: "The user asked: [question]. Describe the visual elements relevant to this question." 4. Apply same fix to `image_compare.py` → `compare_images_async()` |
 | **Files To Modify** | `src/discord_bot/tool_executor.py`, `src/tools/builtins/image_compare.py` |
-
----
-
-| Field | Value |
-|-------|-------|
-| **ID** | REASONING-FIX |
-| **Date** | 2026-05-19 |
-| **Status** | ✅ Implemented |
-| **Severity** | Critical |
-| **Description** | The model (qwen3.6-35b-a3b) was entering extremely long internal reasoning loops (6383 reasoning tokens observed), causing 120-second READ TIMEOUT errors from LM Studio when processing tool calls like `image_compare`. The default max_tokens=2500 was insufficient for the model's extended reasoning. |
-| **Root Cause** | 1) The model's default behavior produces very long internal reasoning before responding. 2) No temperature control for tool-calling turns (temperature was always 0.7). 3) No max_tokens differentiation between tool-calling turns and final responses. 4) No system prompt instruction to keep reasoning brief. |
-| **Fix Applied** | Multi-part fix: |
-| **Fix Details** | 1. **Reasoning Brevity Instruction**: Added critical instructions to system prompt in `message_handler.py` `handle_new_session()` that tell the model to keep reasoning SHORT, respond directly after tool results, and avoid extended chain-of-thought. <br> 2. **Tool-Specific max_tokens**: Modified `_call_lm_studio_via_processor()` in `message_handler.py` to use `tool_max_tokens` (2048) for tool-calling turns and `final_max_tokens` (8192) for final responses after tool results. Detected by checking for `role: "tool"` messages in context. <br> 3. **Lower Tool Temperature**: Tool-calling turns now use `tool_temperature` (0.3) instead of the default 0.7, producing more consistent tool arguments. <br> 4. **Tools Config Web UI**: Added new "⚙️ Tools Config" tab to the web UI with form fields for all settings. <br> 5. **Config Persistence**: Added `tools_config` section to config.py with `get_tools_config()`/`set_tools_config()` methods and API endpoints in app.py. |
-| **Files Modified** | `src/config.py`, `src/app.py`, `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py`, `src/templates/index.html`, `src/static/lm-instances.css`, `src/static/script.js` |
-| **Config Schema** | ```json
-{
-  "tools_config": {
-    "reasoning_brevity": true,
-    "tool_max_tokens": 2048,
-    "tool_temperature": 0.3,
-    "final_max_tokens": 8192,
-    "use_tool_calling": true
-  }
-}
-``` |
-| **Testing** | Requires live testing with image_compare tool to verify timeout no longer occurs. Monitor LM Studio logs for reasoning token count. |
 
 ---
 
@@ -192,7 +259,7 @@ Switched from tkinter GUI to Flask web app due to tkinter unavailability on Fedo
 22. ✅ Fix SessionManager.sessions attribute error in app.py - DONE
 23. ✅ Fix image_describe channel_id duplicate kwarg bug - DONE
 24. ⏳ JavaScript/HTML/CSS refactoring (server-config.js, script.js, debug_script.js)
-25. ⏳ Add memory integration
+25. ⏳ Add memory integration (restructured as memory_manager sub-project)
 26. ⏳ Add channel configuration window
 
 ## FEAT-006: LM Studio Multi-Instance Management (2026-05-18)
