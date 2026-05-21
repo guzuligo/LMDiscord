@@ -892,6 +892,85 @@ _No open issues._
 
 ---
 
+## Potential Issues (To Monitor)
+
+---
+
+### 🆕 PENDING-001: Error Handling in channel.send() After LM Studio Failures
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-001 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | In `message_processor.py`, when a `ConnectionError` or general `Exception` occurs during LM Studio response, `await channel.send(response_text)` is called without error handling. If the send fails (e.g., channel deleted, bot missing permissions, Discord API error), the error propagates unhandled. |
+| **Code Location** | `src/discord_bot/message_processor.py` → `_process_session()` lines 184-201 |
+| **Recommended Fix** | Wrap `channel.send()` in try/except to handle `discord.HTTPException`, `discord.Forbidden`, `discord.NotFound` gracefully. Log the failure but don't crash the processing pipeline. |
+| **Files To Modify** | `src/discord_bot/message_processor.py` |
+
+---
+
+### 🆕 PENDING-002: Hardcoded Turn Limit in Message Processing (range(3))
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-002 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | Both `_process_session()` and `process_active_session()` use `for turn in range(3)` which hard-codes a maximum of 3 turns for tool calling. If a tool requires more than 2 retries (turn 0 initial + turn 1 tool result + turn 2 retry), the loop exits silently without attempting further tool calls. |
+| **Code Location** | `src/discord_bot/message_processor.py` → `_process_session()` line 106, `process_active_session()` line 254 |
+| **Recommended Fix** | Make the turn limit configurable (e.g., `max_tool_turns=5` parameter) or increase the default to handle complex tool chains. |
+| **Files To Modify** | `src/discord_bot/message_processor.py` |
+
+---
+
+### 🆕 PENDING-003: Config Path Dependency Hardcoded
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-003 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | Config path in `app.py` is computed as `Path(__file__).parent.parent / "config.json"` which assumes a specific project structure. If files are moved or the app is deployed differently, the config may not be found. |
+| **Code Location** | `src/app.py` line 598 |
+| **Recommended Fix** | Use an environment variable (e.g., `LM_CONFIG_PATH`) with fallback to the default path. |
+| **Files To Modify** | `src/app.py` |
+
+---
+
+### 🆕 PENDING-004: Session State Consistency on Processing Failure
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-004 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Low |
+| **Description** | In `bot_core.py` `_process_active_session_batch()`, `self._session_manager.update_activity(channel_id)` is called before processing. If processing fails and the lock is released in the except block, there's no guarantee about session state consistency. |
+| **Code Location** | `src/discord_bot/bot_core.py` → `_process_active_session_batch()` lines 532, 580-586 |
+| **Recommended Fix** | Consider updating session activity only after successful processing, or use a try/finally pattern to ensure consistent state. |
+| **Files To Modify** | `src/discord_bot/bot_core.py` |
+
+---
+
+### 🆕 PENDING-005: Missing src/utils.py Import Verification
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-005 |
+| **Date** | 2026-05-21 |
+| **Status** | 🔄 Open |
+| **Severity** | Medium |
+| **Description** | `tool_executor.py` imports `from src.utils import resize_image_bytes, image_to_base64`. While `src/utils.py` exists in the file listing, this import chain should be verified to ensure image processing doesn't fail at runtime with ImportError. |
+| **Code Location** | `src/discord_bot/tool_executor.py` lines 189, 263, 319 |
+| **Recommended Fix** | Add a startup verification check in `app.py` or add unit tests for the image processing pipeline. |
+| **Files To Verify** | `src/utils.py`, `src/discord_bot/tool_executor.py` |
+
+---
+
 ## Known Bugs (Not Yet Fixed)
 
 ---
