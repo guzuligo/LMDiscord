@@ -504,6 +504,21 @@ _No open issues._
 
 ## Open Issues
 
+### 🆕 CHANNEL-001: channel_search Result Format Causes LM Misinterpretation
+
+| Field | Value |
+|-------|-------|
+| **ID** | CHANNEL-001 |
+| **Date** | 2026-05-21 |
+| **Status** | ✅ Solved |
+| **Severity** | Medium |
+| **Description** | After channel_search tool returned results, LM Studio sometimes misinterpreted them and gave incorrect responses. For example, when searching for "Mannequin" in a channel, the bot said "it only found your messages asking to find it" even though the search returned matching messages. |
+| **Root Cause** | The tool result format was too loose and didn't clearly indicate which messages contained the search term. LM Studio couldn't distinguish matching messages from non-matching ones. |
+| **Fix Applied** | 1. **Improved result format** — Added structured `=== Channel Search Results ===` headers with explicit `Search query`, `Total matches`, and `CONTENT:` labels for each message 2. **Added LM instructions** — Appended explicit instructions: "Read the messages above. If the search query was 'X', identify which messages contain this term and provide a direct answer to the user's original question." 3. **Return "" after channel_search** — Changed to return empty string to signal the loop should continue for a final response (prevents bot going silent) |
+| **Files Modified** | `src/discord_bot/tool_executor.py` → `_handle_channel_search()`, `_handle_channel_search_active()` |
+
+---
+
 ### DISCORD-003: UnboundLocalError in get_sessions (sessions variable not initialized)
 
 | Field | Value |
@@ -1071,5 +1086,90 @@ _No open issues._
 | **Fix Applied** | **Fix #1** — `manager.py`: Removed `available_models` check from `select_model()`. Any model can now be selected (discovery is optional browsing only). <br>**Fix #2** — `lm_studio_client.py`: Updated `connect()` to prioritize `_selected_model` over first available model. Also updated the `selected_model` setter to immediately update `_model` when already connected, so no reconnect is needed. <br>**Fix #3** — `api.py`: Added `_sync_client_selected_model()` helper and called it from both `select_model` and `set_active_model` endpoints. Added `_client` global to `api.py`. <br>**Fix #4** — `app.py`: Updated `init_instance_manager()` call to pass the `client` reference so the sync can work. |
 | **Files Modified** | `src/lm_models/manager.py` (removed available_models check), `src/lm_studio_client.py` (connect() + setter), `src/lm_models/api.py` (added _sync_client_selected_model, _client global), `src/app.py` (pass client to init_instance_manager) |
 | **Workflow** | Activate instance → Test (discover models) → Select model → Works immediately (no reconnect needed) |
+
+---
+
+### 🆕 FEAT-008: Context Management System — Channel Search, Session Start Context, Context Compression
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-008 |
+| **Date** | 2026-05-21 |
+| **Status** | ⏳ Planned |
+| **Severity** | Medium |
+| **Description** | Implement a system that enables the Main Bot to manage conversation context efficiently. Three interconnected features: |
+
+#### Feature 1: Channel Search Tool (Foundation)
+- **Purpose**: Fetch recent Discord channel messages with optional filtering and compression
+- **Tool**: `channel_search(channel_id, limit, search_query, username, compress_long)`
+- **Returns**: List of `{author, display_name, content, timestamp, is_reply, replied_to_author, replied_to_content, has_image}`
+- **Behavior**: Skips bot's own messages, truncates long messages to 200 chars, includes full referenced message for replies
+- **File**: `src/tools/builtins/channel_search.py`
+
+#### Feature 2: Session Start Context Initialization
+- **Purpose**: Before starting a new session, generate a compact summary of recent channel activity
+- **Flow**: ChannelSearch → LM summarize → Inject `[CHANNEL CONTEXT: ...]` into conversation history
+- **LM System prompt**: "You are a conversation summarizer. Summarize who is talking to whom, what topics are discussed, and what is resolved vs ongoing."
+- **Output format**: `[CHANNEL CONTEXT: <summary>]` (~300 chars max)
+- **Trigger**: Always at session start
+- **File**: `bot_core.py` → `_handle_new_session_message()` (modified)
+
+#### Feature 3: Context Compression Tool
+- **Purpose**: Compress old conversation messages into a compact summary when conversation grows too long
+- **Tool**: `context_compress(compress_before_message_index, target_summary_length)`
+- **Auto-trigger**: Token consumption >80% OR message count >20
+- **Manual trigger**: Bot calls when it "feels like it" (via LM judgment)
+- **Compression**: Keep last 6 messages fresh, summarize the rest
+- **Output format**: `[CONTEXT: <summary>]` (~300 chars)
+- **File**: `src/tools/builtins/context_compressor.py`
+
+#### Configuration
+```json
+{
+  "context_management": {
+    "session_start": {
+      "recent_messages_limit": 15,
+      "message_truncate_length": 200,
+      "summary_max_length": 300
+    },
+    "compression": {
+      "token_threshold_percent": 80,
+      "message_count_threshold": 20,
+      "messages_to_keep_fresh": 6,
+      "default_summary_length": 300
+    }
+  }
+}
+```
+
+#### Design Decisions (Resolved)
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Channel Search: sync or async? | To be determined during implementation | Discord.py history() is async, current architecture uses run_in_executor |
+| Context Compression trigger? | Token >80% + message count >20 + bot judgment | Three complementary signals |
+| Auto-trigger or bot-decided? | Both — auto on thresholds, bot can also decide | Auto ensures reliability, bot handles nuance |
+| LM-generated or rule-based summary? | LM-generated | Too complex for rule-based effectively |
+
+#### Implementation Plan
+1. Channel Search Tool (foundation — no LM call needed)
+2. Session Start Context Initialization (uses ChannelSearchTool)
+3. Context Compression Tool (LM-based summarization)
+4. Integration: update system prompt, test full flow
+
+| **Files Created** | `src/tools/builtins/channel_search.py`, `src/tools/builtins/context_compressor.py`, `src/discord_bot/context_management.md` |
+| **Files Modified** | `bot_core.py`, `message_handler.py`, `config.py`, `app.py` |
+
+---
+
+### 🆕 PENDING-006: Memory Module Documentation Consolidated Under src/memory/
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-006 |
+| **Date** | 2026-05-21 |
+| **Status** | ✅ Solved |
+| **Severity** | Low |
+| **Description** | Memory module documentation (README, issues_tracker, progress) consolidated under `src/memory/` directory for better organization. |
+| **Files** | `src/memory/README.md`, `src/memory/issues_tracker.md`, `src/memory/progress.md` |
 
 ---

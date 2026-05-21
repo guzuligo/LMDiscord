@@ -1,5 +1,22 @@
 # Implementation Progress - POC: test1
 
+## Recent Fixes (2026-05-21)
+
+### CHANNEL-SEARCH-FIX: channel_search Result Format & Bot Silence Issues
+
+| Field | Value |
+|-------|-------|
+| **ID** | CHANNEL-SEARCH-FIX |
+| **Date** | 2026-05-21 |
+| **Status** | ✅ Implemented |
+| **Severity** | High |
+| **Description** | Two issues with channel_search tool: (1) After channel_search returned results, LM Studio sometimes misinterpreted them and gave incorrect responses (e.g., "it only found your messages asking to find it" when matching messages existed). (2) Bot went silent after tool execution — no final response was posted. |
+| **Root Cause** | 1. Tool result format was too loose — didn't clearly indicate which messages contained the search term. 2. After channel_search tool result was added, the loop broke without making a final LM call to produce a response. |
+| **Fix Applied** | 1. **Improved result format** — Added structured `=== Channel Search Results ===` headers with explicit `Search query`, `Total matches`, and `CONTENT:` labels for each message. 2. **Added LM instructions** — Appended explicit instructions: "Read the messages above. If the search query was 'X', identify which messages contain this term and provide a direct answer to the user's original question." 3. **Return "" after channel_search** — Changed to return empty string to signal the loop should continue for a final response (prevents bot going silent). 4. **Max tool call limit** — Added `MAX_TOOL_CALLS_PER_SESSION = 3` to prevent infinite tool-calling loops. When limit is reached, a user message is added to force the LM to produce a final response. |
+| **Files Modified** | `src/discord_bot/tool_executor.py` → `_handle_channel_search()`, `_handle_channel_search_active()`, `src/discord_bot/message_processor.py` → `process_active_session()` |
+
+---
+
 ## Recent Fixes (2026-05-19)
 
 ### REASONING-FIX: Model Excessive Reasoning Causing 120s Read Timeout
@@ -1138,3 +1155,104 @@ When Discord tokens are synced, the Tokens tab shows:
 | ON | Tokens tab polls for Discord token metrics every 5s |
 | Discord active | Shows latest Discord channel metrics |
 | Discord idle | Shows "No Discord activity" placeholder |
+
+---
+
+## Context Management System (2026-05-21)
+
+### FEAT-008: Context Management — Channel Search, Session Start Context, Context Compression
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-008 |
+| **Date** | 2026-05-21 |
+| **Status** | ⏳ Planned |
+| **Severity** | Medium |
+| **Description** | Implement a system that enables the Main Bot to manage conversation context efficiently. Three interconnected features: |
+
+#### Feature 1: Channel Search Tool (Foundation)
+- **Purpose**: Fetch recent Discord channel messages with optional filtering and compression
+- **Tool**: `channel_search(channel_id, limit, search_query, username, compress_long)`
+- **Returns**: List of `{author, display_name, content, timestamp, is_reply, replied_to_author, replied_to_content, has_image}`
+- **Behavior**: Skips bot's own messages, truncates long messages to 200 chars, includes full referenced message for replies
+- **File**: `src/tools/builtins/channel_search.py`
+
+#### Feature 2: Session Start Context Initialization
+- **Purpose**: Before starting a new session, generate a compact summary of recent channel activity
+- **Flow**: ChannelSearch → LM summarize → Inject `[CHANNEL CONTEXT: ...]` into conversation history
+- **LM System prompt**: "You are a conversation summarizer. Summarize who is talking to whom, what topics are discussed, and what is resolved vs ongoing."
+- **Output format**: `[CHANNEL CONTEXT: <summary>]` (~300 chars max)
+- **Trigger**: Always at session start
+- **File**: `bot_core.py` → `_handle_new_session_message()` (modified)
+
+#### Feature 3: Context Compression Tool
+- **Purpose**: Compress old conversation messages into a compact summary when conversation grows too long
+- **Tool**: `context_compress(compress_before_message_index, target_summary_length)`
+- **Auto-trigger**: Token consumption >80% OR message count >20
+- **Manual trigger**: Bot calls when it "feels like it" (via LM judgment)
+- **Compression**: Keep last 6 messages fresh, summarize the rest
+- **Output format**: `[CONTEXT: <summary>]` (~300 chars)
+- **File**: `src/tools/builtins/context_compressor.py`
+
+#### Configuration
+```json
+{
+  "context_management": {
+    "session_start": {
+      "recent_messages_limit": 15,
+      "message_truncate_length": 200,
+      "summary_max_length": 300
+    },
+    "compression": {
+      "token_threshold_percent": 80,
+      "message_count_threshold": 20,
+      "messages_to_keep_fresh": 6,
+      "default_summary_length": 300
+    }
+  }
+}
+```
+
+#### Design Decisions (Resolved)
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Channel Search: sync or async? | To be determined during implementation | Discord.py history() is async, current architecture uses run_in_executor |
+| Context Compression trigger? | Token >80% + message count >20 + bot judgment | Three complementary signals |
+| Auto-trigger or bot-decided? | Both — auto on thresholds, bot can also decide | Auto ensures reliability, bot handles nuance |
+| LM-generated or rule-based summary? | LM-generated | Too complex for rule-based effectively |
+
+#### Implementation Plan
+1. **Channel Search Tool** (foundation — no LM call needed) — First
+2. **Session Start Context Initialization** (uses ChannelSearchTool)
+3. **Context Compression Tool** (LM-based summarization)
+4. **Integration**: update system prompt, test full flow
+
+#### Files Created
+| File | Purpose |
+|------|---------|
+| `src/discord_bot/context_management.md` | Complete design documentation |
+| `src/tools/builtins/channel_search.py` | NEW — ChannelSearchTool |
+| `src/tools/builtins/context_compressor.py` | NEW — ContextCompressor |
+
+#### Files To Modify
+| File | Changes |
+|------|---------|
+| `bot_core.py` | Session start context injection in `_handle_new_session_message()` |
+| `message_handler.py` | Context compression tool handling |
+| `config.py` | Add `context_management` config section |
+| `app.py` | API endpoints for context config |
+
+---
+
+### Lessons Learned (From Main Project)
+
+| Lesson | Source | Application |
+|--------|--------|-------------|
+| User identity tracking is critical | BUG-003 (main) | Memory keys should use immutable user_id |
+| Context persistence matters | ISS-018 (main) | Memory system extends session context |
+| Per-server nicknames vary | BUG-003 (main) | Memory should track per-server identity |
+| Session timeout = 600s | Current config | Memory should persist beyond session timeout |
+| Base64 images cause overflow | BUG-002 (main) | Memory should store descriptions, not raw data |
+| Cross-thread async callbacks fail silently | DISCORD-003 (main) | Update shared state directly in event handlers |
+| Python `from module import var` creates stale reference | DISCORD-002 (main) | Import module, access attributes dynamically |
+| JavaScript integer precision loss >16 digits | BUG-006 (main) | Always pass Discord IDs as strings |

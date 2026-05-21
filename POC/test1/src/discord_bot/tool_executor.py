@@ -27,7 +27,8 @@ class ToolCallHandler:
         channel: Any,
         turn: int,
         safe_downloader: Any,
-        make_lm_call_func: Optional[Any] = None
+        make_lm_call_func: Optional[Any] = None,
+        get_bot_instance: Optional[Any] = None
     ) -> Optional[str]:
         """Process tool calls from LM Studio (new session variant).
 
@@ -38,6 +39,7 @@ class ToolCallHandler:
             turn: Current turn number
             safe_downloader: SafeImageDownloader instance
             make_lm_call_func: Optional function to make LM calls (for mini-context)
+            get_bot_instance: Optional callable that returns the DiscordBot instance
 
         Returns:
             Response text, or None if end_session was called
@@ -62,6 +64,11 @@ class ToolCallHandler:
                     func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
                 )
                 return result
+            elif func_name == "channel_search":
+                await self._handle_channel_search(
+                    func_args, messages_for_lm, tool_call_id, get_bot_instance
+                )
+                return ""  # Signal: tool executed, continue loop for final response
             else:
                 tool_result = f"Unknown tool: {func_name}"
                 messages_for_lm.append({
@@ -78,7 +85,8 @@ class ToolCallHandler:
         messages_for_lm: List[Dict],
         turn: int,
         safe_downloader: Any,
-        make_lm_call_func: Optional[Any] = None
+        make_lm_call_func: Optional[Any] = None,
+        get_bot_instance: Optional[Any] = None
     ) -> Optional[Dict]:
         """Process tool calls from LM Studio (active session variant).
 
@@ -88,6 +96,7 @@ class ToolCallHandler:
             turn: Current turn number
             safe_downloader: SafeImageDownloader instance
             make_lm_call_func: Optional function to make LM calls (for mini-context)
+            get_bot_instance: Optional callable that returns the DiscordBot instance
 
         Returns:
             Dict with 'farewell' key if end_session was called, None otherwise
@@ -114,6 +123,11 @@ class ToolCallHandler:
                 await self._handle_image_compare_active(
                     func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
                 )
+            elif func_name == "channel_search":
+                await self._handle_channel_search_active(
+                    func_args, messages_for_lm, tool_call_id, get_bot_instance
+                )
+                return None  # Signal: tool executed, continue loop for final response
             else:
                 messages_for_lm.append({
                     "role": "tool",
@@ -525,7 +539,149 @@ class ToolCallHandler:
                 "content": f"Error during image comparison: {str(e)}"
             })
 
-        return comparison_text
+    async def _handle_channel_search(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        get_bot_instance: Optional[Any] = None
+    ) -> None:
+        """Handle channel_search tool call (new session variant).
+
+        Fetches recent channel messages and formats them for LM Studio consumption.
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            get_bot_instance: Optional callable that returns the DiscordBot instance
+        """
+        try:
+            args = json.loads(func_args)
+            channel = args.get("channel", "")  # Unified channel parameter
+            limit = args.get("limit", 15)
+            search_query = args.get("search_query", "")
+            username = args.get("username", "")
+            compress_long = args.get("compress_long", True)
+
+            # Log channel spec for debugging
+            channel_display = channel if channel else "(all channels)"
+            logger.info(f"[channel_search] Searching channel {channel_display} (limit={limit}, query='{search_query}')")
+
+            # Get bot instance and fetch messages
+            if get_bot_instance is None:
+                logger.warning("[channel_search] No bot instance provided, returning error")
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "Error: Bot instance not available for channel search"
+                })
+                return
+
+            bot = get_bot_instance()
+            if bot is None:
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "Error: Bot not available"
+                })
+                return
+
+            # Fetch messages using the bot's async method with unified channel parameter
+            result = await bot.get_channel_messages(
+                channel=str(channel),
+                limit=int(limit),
+                search_query=str(search_query),
+                username=str(username),
+                compress_long=bool(compress_long)
+            )
+
+            messages = result.get("messages", [])
+            available_channels = result.get("available_channels", {})
+
+            # Format the result for LM Studio
+            if not messages:
+                error_msg = result.get("error", "No messages found matching the specified criteria.")
+                if available_channels:
+                    # Show available channels to help the bot learn the channel names
+                    channels_list = ", ".join([f"{name} (ID: {id})" for name, id in list(available_channels.items())[:10]])
+                    tool_content = f"{error_msg}\n\nAvailable channels: {channels_list}"
+                else:
+                    tool_content = error_msg
+            else:
+                # Build a clear, structured result for LM Studio
+                result_lines = [f"=== Channel Search Results ==="]
+                result_lines.append(f"Search query: '{search_query}'")
+                result_lines.append(f"Total matches: {len(messages)} messages")
+                result_lines.append(f"")
+                
+                for i, msg in enumerate(messages, 1):
+                    author = msg.get("display_name", msg.get("author", "Unknown"))
+                    content = msg.get("content", "")
+                    timestamp = msg.get("timestamp", "")
+                    is_reply = msg.get("is_reply", False)
+                    replied_to = msg.get("replied_to_author")
+                    channel_name = msg.get("_channel_name", "")
+                    
+                    # Build entry with clear structure
+                    entry_parts = []
+                    if channel_name:
+                        entry_parts.append(f"[#{channel_name}]")
+                    entry_parts.append(f"{i}. **{author}** at {timestamp}")
+                    if is_reply and replied_to:
+                        entry_parts.append(f"(Reply to {replied_to})")
+                    entry_line = " ".join(entry_parts) + ":"
+                    
+                    result_lines.append(entry_line)
+                    result_lines.append(f"  CONTENT: {content}")
+                
+                result_lines.append(f"")
+                result_lines.append(f"=== END OF RESULTS ===")
+                result_lines.append(f"INSTRUCTIONS: Read the messages above. If the search query was '{search_query}', identify which messages contain this term and provide a direct answer to the user's original question.")
+                tool_content = "\n".join(result_lines)
+
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": tool_content
+            })
+            logger.info(f"[channel_search] Returned {len(messages)} messages")
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing channel_search args: {e}")
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error: Invalid arguments for channel_search: {str(e)}"
+            })
+        except Exception as e:
+            logger.error(f"Error in channel_search: {e}", exc_info=True)
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error during channel search: {str(e)}"
+            })
+
+    async def _handle_channel_search_active(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        get_bot_instance: Optional[Any] = None
+    ) -> None:
+        """Handle channel_search tool call (active session variant).
+
+        Fetches recent channel messages and formats them for LM Studio consumption.
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            get_bot_instance: Optional callable that returns the DiscordBot instance
+        """
+        await self._handle_channel_search(
+            func_args, messages_for_lm, tool_call_id, get_bot_instance
+        )
 
     async def _handle_image_compare_active(
         self,

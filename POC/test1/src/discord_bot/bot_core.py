@@ -36,6 +36,7 @@ from src.discord_bot.message_handler import MessageHandler
 from src.tools.registry import ToolRegistry
 from src.tools.builtins.image_describe import ImageDescribeTool
 from src.tools.builtins.image_compare import ImageCompareTool
+from src.tools.builtins.channel_search import ChannelSearchTool
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -90,8 +91,10 @@ class DiscordBot:
         self._tool_registry = ToolRegistry()
         self._image_describe_tool = ImageDescribeTool()
         self._image_compare_tool = ImageCompareTool()
+        self._channel_search_tool = ChannelSearchTool()
         self._tool_registry.register(self._image_describe_tool)
         self._tool_registry.register(self._image_compare_tool)
+        self._tool_registry.register(self._channel_search_tool)
         
         # Get tool definitions for LM Studio
         self._tool_definitions = self._tool_registry.get_all_definitions()
@@ -122,7 +125,8 @@ class DiscordBot:
             reasoning_brevity=tools_config.get('reasoning_brevity', True),
             tool_max_tokens=tools_config.get('tool_max_tokens', 2048),
             tool_temperature=tools_config.get('tool_temperature', 0.3),
-            final_max_tokens=tools_config.get('final_max_tokens', 8192)
+            final_max_tokens=tools_config.get('final_max_tokens', 8192),
+            bot_instance=self  # Pass self for channel_search tool
         )
         
         # Store tools config for apply_tools_config
@@ -858,6 +862,335 @@ class DiscordBot:
         # Sort by position ( Discord API already returns sorted, but ensure it)
         channels.sort(key=lambda x: x["position"])
         return channels
+
+    # --- Channel Search (FEAT-008) ---
+
+    def get_channel_mapping(self) -> Dict[str, str]:
+        """Get a mapping of channel names to channel IDs for all visible channels.
+        
+        Returns:
+            Dict mapping {channel_name: channel_id} for all text channels across all guilds
+        """
+        if not self.client.is_ready():
+            return {}
+        
+        mapping = {}
+        for guild in self.client.guilds:
+            for channel in guild.text_channels:
+                mapping[channel.name] = str(channel.id)
+        return mapping
+
+    def resolve_channel(self, channel_spec: str) -> Optional[int]:
+        """Resolve a channel specification to a channel ID.
+        
+        Args:
+            channel_spec: Channel specification. Formats:
+                - "#123456789" — channel ID
+                - "@channelname" — channel name (first match)
+                - "this" — current active session channel
+                - "current" — current active session channel
+        
+        Returns:
+            Channel ID as integer, or None if not found
+        """
+        if not self.client.is_ready():
+            return None
+        
+        spec = channel_spec.strip().lower()
+        
+        # "this" or "current" → resolve from active session
+        if spec in ("this", "current"):
+            active_channels = self._session_manager.get_active_channels()
+            if active_channels:
+                # Return the most recent active channel
+                return int(active_channels[0])
+            logger.warning("[resolve_channel] 'this' specified but no active session")
+            return None
+        
+        # "#123456789" → channel ID
+        if spec.startswith("#"):
+            try:
+                channel_id = int(spec[1:])
+                # Verify channel exists
+                channel = self.client.get_channel(channel_id)
+                if channel:
+                    return channel_id
+                logger.warning(f"[resolve_channel] Channel {channel_id} not found")
+                return None
+            except ValueError:
+                logger.warning(f"[resolve_channel] Invalid channel ID: {spec}")
+                return None
+        
+        # "@channelname" → channel name lookup
+        if spec.startswith("@"):
+            channel_name = spec[1:].strip()
+            mapping = self.get_channel_mapping()
+            if channel_name in mapping:
+                return int(mapping[channel_name])
+            logger.warning(f"[resolve_channel] Channel not found: {channel_name}")
+            # Log available channels for debugging
+            available = list(mapping.keys())[:10]
+            logger.info(f"[resolve_channel] Available channels: {available}")
+            return None
+        
+        # Plain number → assume channel ID
+        try:
+            channel_id = int(spec)
+            channel = self.client.get_channel(channel_id)
+            if channel:
+                return channel_id
+            return None
+        except ValueError:
+            pass
+        
+        # Plain text → try as channel name
+        mapping = self.get_channel_mapping()
+        if spec in mapping:
+            return int(mapping[spec])
+        
+        logger.warning(f"[resolve_channel] Could not resolve channel: {channel_spec}")
+        return None
+
+    async def _fetch_channel_messages(
+        self,
+        channel_id: int,
+        limit: int = 15,
+        filter_bots: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent messages from a Discord channel for context building.
+
+        This method is called by the ChannelSearchTool to get pre-fetched
+        message data. The actual Discord API calls are async.
+
+        Args:
+            channel_id: Discord channel ID
+            limit: Number of messages to fetch (1-50)
+            filter_bots: If True, skip bot messages. Default False.
+
+        Returns:
+            List of message dicts with author, content, timestamp, reply info, image info
+        """
+        if not self.client.is_ready():
+            logger.warning("Bot not ready, cannot fetch channel messages")
+            return []
+
+        # Clamp limit
+        limit = max(1, min(limit, 50))
+
+        try:
+            # Get the channel
+            channel = self.client.get_channel(channel_id)
+            if channel is None:
+                # Try to fetch from guild
+                for guild in self.client.guilds:
+                    channel = guild.get_channel(channel_id)
+                    if channel is not None:
+                        break
+
+            if channel is None:
+                logger.warning(f"Channel {channel_id} not found")
+                return []
+
+            # Fetch messages from history
+            messages = []
+            bot_id = self.client.user.id if self.client.user else None
+
+            async for msg in channel.history(limit=limit, oldest_first=False):
+                # Optionally skip bot's own messages
+                if bot_id and msg.author.id == bot_id:
+                    continue
+
+                # Optionally skip messages from other bots
+                if filter_bots and msg.author.bot:
+                    continue
+
+                # Get author info
+                author = msg.author.name
+                display_name = msg.author.display_name
+
+                # Get content
+                content = (msg.content or "").strip()
+                if not content:
+                    content = "[Image/Attachment only]"
+
+                # Get timestamp
+                timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+
+                # Check for reply
+                is_reply = False
+                replied_to_author = None
+                replied_to_content = None
+                if msg.reference:
+                    try:
+                        referenced_msg = await msg.channel.fetch_message(msg.reference.message_id)
+                        if referenced_msg:
+                            is_reply = True
+                            replied_to_author = referenced_msg.author.name
+                            replied_to_content = (referenced_msg.content or "").strip()[:100]
+                    except (discord.NotFound, AttributeError):
+                        pass
+
+                # Check for image attachment
+                has_image = False
+                if hasattr(msg, 'attachments') and msg.attachments:
+                    for attachment in msg.attachments:
+                        if attachment.filename:
+                            ext = attachment.filename.lower().split('.')[-1]
+                            if ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'):
+                                has_image = True
+                                break
+
+                messages.append({
+                    "author": author,
+                    "display_name": display_name,
+                    "content": content,
+                    "timestamp": timestamp,
+                    "is_reply": is_reply,
+                    "replied_to_author": replied_to_author,
+                    "replied_to_content": replied_to_content,
+                    "has_image": has_image
+                })
+
+            # Reverse to show oldest first (chronological order)
+            messages.reverse()
+            return messages
+
+        except Exception as e:
+            logger.error(f"Error fetching channel messages: {e}", exc_info=True)
+            return []
+
+    async def search_all_channels(
+        self,
+        limit: int = 15,
+        search_query: str = "",
+        username: str = "",
+        compress_long: bool = True
+    ) -> Dict[str, Any]:
+        """Search messages across all visible channels.
+        
+        Args:
+            limit: Number of messages to fetch per channel
+            search_query: Optional text filter
+            username: Optional username filter
+            compress_long: Whether to truncate long messages
+        
+        Returns:
+            Dict with 'messages' key containing all matching messages from all channels
+        """
+        all_messages = []
+        
+        if not self.client.is_ready():
+            return {"messages": [], "error": "Bot not ready"}
+        
+        for guild in self.client.guilds:
+            for channel in guild.text_channels:
+                channel_messages = await self._fetch_channel_messages(channel.id, limit)
+                
+                # Apply search_query filter
+                if search_query:
+                    search_lower = search_query.lower()
+                    channel_messages = [
+                        m for m in channel_messages
+                        if search_lower in m.get("content", "").lower()
+                    ]
+                
+                # Apply username filter
+                if username:
+                    username_lower = username.lower()
+                    channel_messages = [
+                        m for m in channel_messages
+                        if m.get("author", "").lower() == username_lower
+                        or m.get("display_name", "").lower() == username_lower
+                    ]
+                
+                # Add channel info to each message
+                for msg in channel_messages:
+                    msg["_channel_name"] = channel.name
+                    msg["_channel_id"] = str(channel.id)
+                
+                all_messages.extend(channel_messages)
+        
+        # Sort by timestamp (newest first), then truncate
+        all_messages.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+        
+        # Truncate long messages if compress_long
+        if compress_long:
+            for msg in all_messages:
+                content = msg.get("content", "")
+                if len(content) > 200:
+                    msg["content"] = content[:200] + "..."
+        
+        return {"messages": all_messages}
+
+    async def get_channel_messages(
+        self,
+        channel: str = "",
+        limit: int = 15,
+        search_query: str = "",
+        username: str = "",
+        compress_long: bool = True
+    ) -> Dict[str, Any]:
+        """Public method to get channel messages for tool execution.
+        
+        This method is called by the tool_executor to fetch and format
+        channel messages for the ChannelSearchTool.
+        
+        Args:
+            channel: Channel specification. Formats:
+                - "#123456789" — channel ID
+                - "@channelname" — channel name
+                - "this" — current active session channel
+                - "" or None — search all channels
+            limit: Number of messages to fetch per channel
+            search_query: Optional text filter
+            username: Optional username filter
+            compress_long: Whether to truncate long messages
+
+        Returns:
+            Dict with 'messages' key containing the formatted message list
+        """
+        # Handle empty/None channel → search all
+        if not channel or channel.strip().lower() in ("", "all", "*"):
+            return await self.search_all_channels(limit, search_query, username, compress_long)
+        
+        # Resolve channel specification to ID
+        channel_id = self.resolve_channel(channel)
+        if channel_id is None:
+            logger.error(f"Could not resolve channel: {channel}")
+            available = self.get_channel_mapping()
+            return {
+                "messages": [],
+                "error": f"Could not resolve channel: {channel}",
+                "available_channels": available
+            }
+        
+        messages = await self._fetch_channel_messages(channel_id, limit)
+        
+        # Apply search_query filter
+        if search_query:
+            search_lower = search_query.lower()
+            messages = [
+                m for m in messages
+                if search_lower in m.get("content", "").lower()
+            ]
+        
+        # Apply username filter
+        if username:
+            username_lower = username.lower()
+            messages = [
+                m for m in messages
+                if m.get("author", "").lower() == username_lower
+                or m.get("display_name", "").lower() == username_lower
+            ]
+        
+        # Truncate long messages if compress_long
+        if compress_long:
+            for msg in messages:
+                content = msg.get("content", "")
+                if len(content) > 200:
+                    msg["content"] = content[:200] + "..."
+        
+        return {"messages": messages}
 
     # ====================================================================
     # Tools Configuration (REASONING-FIX)
