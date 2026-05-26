@@ -395,3 +395,79 @@ function updateSystemPromptStatusText(status) {
         el.style.color = status.includes('Error') || status.includes('failed') ? '#f38ba8' : '#a6e3a1';
     }
 }
+
+// ==================== Memory Database Path Functions ====================
+
+const DEFAULT_MEMORY_DB_PATH = "user/data/memory/memory.db";
+
+async function loadMemoryDbPath() {
+    try {
+        const response = await fetch('/api/settings/memory_db_path');
+        const data = await response.json();
+        if (data.success) {
+            const input = document.getElementById('memoryDbPath');
+            if (input) input.value = data.memory_db_path;
+            updateMemoryDbStatusText('Loaded');
+        }
+    } catch (e) {
+        console.error('Failed to load memory_db_path:', e);
+        updateMemoryDbStatusText('Error loading');
+    }
+}
+
+async function saveMemoryDbPath() {
+    const input = document.getElementById('memoryDbPath');
+    const dbPath = input.value.trim();
+    if (!dbPath) {
+        addMessage('⚠️ Database path cannot be empty', 'error');
+        updateMemoryDbStatusText('Save failed');
+        return;
+    }
+    try {
+        const response = await fetch('/api/settings/memory_db_path', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ memory_db_path: dbPath })
+        });
+        const data = await response.json();
+        if (data.success) {
+            updateMemoryDbStatusText('Saved ✅');
+            addMessage(`💾 Memory database path set to ${dbPath}`, 'system');
+        } else {
+            addMessage(data.error || 'Failed to update memory database path', 'error');
+            updateMemoryDbStatusText('Save failed');
+        }
+    } catch (e) {
+        addMessage('Error: ' + e.message, 'error');
+        updateMemoryDbStatusText('Error');
+    }
+}
+
+async function resetMemoryDbPath() {
+    if (!confirm('Reset memory database path to default?')) return;
+    document.getElementById('memoryDbPath').value = DEFAULT_MEMORY_DB_PATH;
+    try {
+        const response = await fetch('/api/settings/memory_db_path', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ memory_db_path: DEFAULT_MEMORY_DB_PATH })
+        });
+        const data = await response.json();
+        if (data.success) {
+            updateMemoryDbStatusText('Reset to default ✅');
+            addMessage('💾 Memory database path reset to default', 'system');
+        } else {
+            addMessage('Failed to reset memory database path', 'error');
+        }
+    } catch (e) {
+        addMessage('Error: ' + e.message, 'error');
+    }
+}
+
+function updateMemoryDbStatusText(status) {
+    const el = document.getElementById('memoryDbStatusText');
+    if (el) {
+        el.textContent = status;
+        el.style.color = status.includes('Error') || status.includes('failed') ? '#f38ba8' : '#a6e3a1';
+    }
+}

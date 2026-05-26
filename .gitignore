@@ -40,3 +40,4 @@ ENV/
 .idea/
 *.swp
 *.swo
+user/

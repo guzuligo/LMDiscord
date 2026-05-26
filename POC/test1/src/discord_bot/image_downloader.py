@@ -61,6 +61,10 @@ class SafeImageDownloader:
     async def _download_with_session(self, url: str, headers: Optional[dict] = None) -> bytes:
         """Download image using a session with optional custom headers.
         
+        For Discord CDN URLs, automatically adds a User-Agent header to mimic
+        a browser request. This helps bypass CDN restrictions that block
+        requests without proper headers.
+        
         Args:
             url: URL to download from
             headers: Optional extra headers to include
@@ -74,7 +78,18 @@ class SafeImageDownloader:
         """
         timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=timeout, headers=headers) as response:
+            # Merge User-Agent header if URL is Discord CDN
+            merged_headers = dict(headers or {})
+            parsed = urlparse(url)
+            if parsed.hostname in ("cdn.discordapp.com", "media.discordapp.net"):
+                # Add browser-like User-Agent if not already present
+                if "User-Agent" not in merged_headers:
+                    merged_headers["User-Agent"] = (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    )
+            async with session.get(url, timeout=timeout, headers=merged_headers or None) as response:
                 # Validate content type
                 content_type = response.content_type.lower()
                 if content_type not in ALLOWED_CONTENT_TYPES:
@@ -128,9 +143,22 @@ class SafeImageDownloader:
             return raw_bytes
         except (aiohttp.ClientResponseError, ValueError) as e:
             error_str = str(e).lower()
-            # For Discord CDN hosts, retry with Referer header on 404
+            # For Discord CDN hosts, retry with Referer header on 404 or content-type errors
+            # (Discord sometimes returns HTML error pages that pass initial checks)
             if hostname in ("cdn.discordapp.com", "media.discordapp.net") and ("404" in error_str or "not found" in error_str):
                 logger.info(f"Got 404 for {url}, retrying with Referer header (image may have been deleted/moved)")
+                try:
+                    referer_headers = {"Referer": "https://discord.com"}
+                    raw_bytes = await self._download_with_session(url, headers=referer_headers)
+                    logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} with Referer header")
+                    return raw_bytes
+                except Exception as retry_error:
+                    logger.warning(f"Retry with Referer also failed for {url}: {retry_error}")
+                    raise ValueError(f"Image not found (404) even with Referer retry: {url}") from e
+            # Additional retry: if content type is text/html, the CDN may have returned
+            # an error page. Retry with Referer header as a fallback.
+            if hostname in ("cdn.discordapp.com", "media.discordapp.net") and isinstance(e, ValueError) and "content type" in error_str:
+                logger.info(f"Got unexpected content type for {url}, retrying with Referer header")
                 try:
                     referer_headers = {"Referer": "https://discord.com"}
                     raw_bytes = await self._download_with_session(url, headers=referer_headers)

@@ -399,6 +399,11 @@ function switchTab(tabName) {
         buttons[idx]?.classList.add('active');
         document.getElementById('tools-config-tab')?.classList.add('active');
         loadToolsConfig();
+    } else if (tabName === 'memory-db') {
+        // memory-db is at index 5 (chat=0, tokens=1, servers=2, lm-instances=3, tools-config=4, memory-db=5, logs=last)
+        buttons[5]?.classList.add('active');
+        document.getElementById('memory-db-tab')?.classList.add('active');
+        loadMemoryDbPath();
     } else if (tabName === 'logs') {
         buttons[buttons.length - 1]?.classList.add('active');
         document.getElementById('logs-tab')?.classList.add('active');
@@ -496,6 +501,7 @@ window.addEventListener('load', async () => {
     await loadMaxResponseLength();
     await loadSystemPrompt();
     await loadToolsConfig();
+    await loadMemoryDbPath();
 
     // Start log polling
     fetchLogs();
