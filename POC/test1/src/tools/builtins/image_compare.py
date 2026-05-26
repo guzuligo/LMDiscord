@@ -229,8 +229,12 @@ class ImageCompareTool(BaseTool):
         content_parts = []
         
         # Build the comparison instruction text
+        # Priority: 1) comparison_prompt from LM Studio, 2) image_instruction (user's question), 3) generic fallback
         if comparison_prompt:
             comparison_instruction = f"Comparison focus: {comparison_prompt}"
+        elif image_instruction:
+            # UX-002 Fix: Use the user's actual question to focus the comparison
+            comparison_instruction = f"The user asked: {image_instruction}. Compare these images and focus on visual elements relevant to this question."
         else:
             comparison_instruction = "Compare these images side by side. Note similarities, differences, and notable features. Be specific and detailed."
         
