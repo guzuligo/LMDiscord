@@ -96,8 +96,15 @@ class ChannelSearchTool(BaseTool):
         them as the 'messages' kwarg. This method formats them into the
         structured result format.
         
+        Each message dict includes Discord jump link data (message_id,
+        channel_id, guild_id) so the LM can reference specific messages
+        with clickable links in its responses.
+        
         Args:
             messages: List of message dicts from bot layer, each containing:
+                - message_id (int): Discord message ID (for jump links)
+                - channel_id (int): Discord channel ID
+                - guild_id (int|None): Discord guild/server ID
                 - author (str): username
                 - display_name (str): display name
                 - content (str): message text
@@ -109,7 +116,9 @@ class ChannelSearchTool(BaseTool):
             **kwargs: Additional arguments (ignored)
             
         Returns:
-            ToolResult with content as formatted text summary of messages
+            ToolResult with content as formatted text summary of messages.
+            Each message includes a REF field with a Discord jump link
+            (https://discord.com/channels/{guild}/{channel}/{message}).
         """
         try:
             if not messages:

@@ -506,6 +506,14 @@ class ToolCallHandler:
 
             from src.tools.builtins.image_compare import ImageCompareTool
 
+            # UX-002 Fix: If the model didn't provide a comparison_prompt,
+            # extract the user's last message to focus the comparison on what they asked.
+            image_instruction = None
+            if not comparison_prompt:
+                image_instruction = self._extract_last_user_message(messages_for_lm)
+                if image_instruction:
+                    logger.info(f"[image_compare][UX-002] Using user message as instruction: {image_instruction[:60]}...")
+
             # Use comparison_prompt from tool args as the comparison instruction.
             # Pass max_tokens=4096 to accommodate multi-image base64 payloads.
             comparison_text = await ImageCompareTool.compare_images_async(
@@ -513,6 +521,7 @@ class ToolCallHandler:
                 comparison_prompt=comparison_prompt,
                 safe_downloader=safe_downloader,
                 make_lm_call_func=make_lm_call_func,
+                image_instruction=image_instruction,
                 mini_context_max_tokens=4096
             )
 
@@ -622,7 +631,10 @@ class ToolCallHandler:
                     is_reply = msg.get("is_reply", False)
                     replied_to = msg.get("replied_to_author")
                     channel_name = msg.get("_channel_name", "")
-                    
+                    message_id = msg.get("message_id")
+                    msg_channel_id = msg.get("channel_id")
+                    guild_id = msg.get("guild_id")
+
                     # Build entry with clear structure
                     entry_parts = []
                     if channel_name:
@@ -631,9 +643,14 @@ class ToolCallHandler:
                     if is_reply and replied_to:
                         entry_parts.append(f"(Reply to {replied_to})")
                     entry_line = " ".join(entry_parts) + ":"
-                    
+
                     result_lines.append(entry_line)
                     result_lines.append(f"  CONTENT: {content}")
+
+                    # Append Discord jump link so the LM can reference it
+                    if message_id and msg_channel_id and guild_id:
+                        jump_link = f"https://discord.com/channels/{guild_id}/{msg_channel_id}/{message_id}"
+                        result_lines.append(f"  REF: {jump_link}")
                 
                 result_lines.append(f"")
                 result_lines.append(f"=== END OF RESULTS ===")
@@ -712,6 +729,14 @@ class ToolCallHandler:
 
             from src.tools.builtins.image_compare import ImageCompareTool
 
+            # UX-002 Fix: If the model didn't provide a comparison_prompt,
+            # extract the user's last message to focus the comparison on what they asked.
+            image_instruction = None
+            if not comparison_prompt:
+                image_instruction = self._extract_last_user_message(messages_for_lm)
+                if image_instruction:
+                    logger.info(f"[image_compare][UX-002] Using user message as instruction (active): {image_instruction[:60]}...")
+
             # Use comparison_prompt from tool args as the comparison instruction.
             # Pass max_tokens=4096 to accommodate multi-image base64 payloads.
             comparison_text = await ImageCompareTool.compare_images_async(
@@ -719,6 +744,7 @@ class ToolCallHandler:
                 comparison_prompt=comparison_prompt,
                 safe_downloader=safe_downloader,
                 make_lm_call_func=make_lm_call_func,
+                image_instruction=image_instruction,
                 mini_context_max_tokens=4096
             )
 

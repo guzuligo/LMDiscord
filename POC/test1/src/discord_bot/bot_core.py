@@ -1041,6 +1041,9 @@ class DiscordBot:
                                 break
 
                 messages.append({
+                    "message_id": msg.id,
+                    "channel_id": channel.id,
+                    "guild_id": msg.guild.id if msg.guild else None,
                     "author": author,
                     "display_name": display_name,
                     "content": content,
