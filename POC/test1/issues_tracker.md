@@ -1178,6 +1178,22 @@ _No open issues._
 
 ---
 
+### 🆕 PENDING-004: Session State Consistency on Processing Failure — Solved
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-004 |
+| **Date** | 2026-05-21 |
+| **Date Solved** | 2026-05-26 |
+| **Status** | ✅ Solved |
+| **Severity** | Low |
+| **Description** | In `bot_core.py` `_process_active_session_batch()`, `self._session_manager.update_activity(channel_id)` was called **before** processing begins. If processing fails and the lock is released in the `except` block, there's no guarantee about session state consistency — the session appears "active" even though it may have failed mid-processing. |
+| **Root Cause** | `update_activity()` was at line 560, before the message handler call. Failed processing would still refresh the last-active timestamp. |
+| **Fix Applied** | Moved `self._session_manager.update_activity(channel_id)` to **after** the `handle_active_session_batch()` call succeeds. Now the activity timestamp is only updated when processing completes successfully. Added comment explaining the fix. |
+| **Files Modified** | `src/discord_bot/bot_core.py` → `_process_active_session_batch()` method |
+
+---
+
 ### 🆕 BUG-011: Channel Name Resolution Fails for `#general` (Treated as ID, Not Name)
 
 | Field | Value |

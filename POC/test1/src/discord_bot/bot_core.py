@@ -556,10 +556,7 @@ class DiscordBot:
             reply_context: String with the referenced message content for Discord replies
         """
         try:
-            # Update session activity
-            self._session_manager.update_activity(channel_id)
-
-            # Get session info for identity tracking
+            # Get session info for identity tracking (before processing, needed for nick comparison)
             session_info = self._session_manager.get_session(channel_id) or {}
             initial_nick = session_info.get("initial_nick")
             session_user = session_info.get("author_name") or author_name
@@ -587,6 +584,11 @@ class DiscordBot:
                 display_changed=display_changed,
                 reply_context=reply_context
             )
+
+            # Update session activity AFTER successful processing (PENDING-004 fix)
+            # This ensures failed sessions don't incorrectly refresh the last-active timestamp
+            self._session_manager.update_activity(channel_id)
+
             # result is a dict with 'usage' and 'should_end_session' keys
             usage = result.get("usage") if isinstance(result, dict) else None
             message_handler_should_end_session = result.get("should_end_session", False) if isinstance(result, dict) else False
