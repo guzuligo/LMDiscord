@@ -58,6 +58,7 @@
             <button class="tab-button" onclick="switchTab('servers')">🔧 Servers</button>
              <button class="tab-button" id="lm-instances-btn" onclick="switchTab('lm-instances')">🧠 LM Instances</button>
              <button class="tab-button" onclick="switchTab('tools-config')">⚙️ Tools Config</button>
+             <button class="tab-button" onclick="switchTab('memory-db')">🧠 Memory DB</button>
              <button class="tab-button" onclick="switchTab('logs')">📋 Logs <span id="logBadge" style="display:none; background:#f38ba8; color:#1e1e2e; padding:0 4px; border-radius:8px; font-size:10px; margin-left:4px;">0</span></button>
         </div>
         
@@ -342,6 +343,35 @@
                     <button class="btn btn-primary" onclick="saveToolsConfig()">💾 Save Tools Configuration</button>
                     <button class="btn btn-secondary" onclick="resetToolsConfig()">🔄 Reset to Defaults</button>
                     <span id="toolsConfigStatusText" class="system-prompt-status" style="margin-left: 12px;">Loading...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Memory Database tab -->
+        <div class="tab-content" id="memory-db-tab">
+            <div class="tools-config-container" id="memoryDbContainer">
+                <div class="lm-instances-header">
+                    <h3>🧠 Memory Database</h3>
+                    <p style="color: #6c7086; font-size: 12px;">Configure the database path for persistent memory storage. The bot uses this to save and load memory data.</p>
+                </div>
+
+                <!-- Memory DB Path -->
+                <div class="server-channels-section" style="margin-bottom: 16px;">
+                    <h5>💾 Database Path</h5>
+                    <div class="tools-config-grid">
+                        <div class="tools-config-item" style="grid-column: 1 / -1;">
+                            <label class="tools-config-label">Database File Path:</label>
+                            <input type="text" class="tools-config-input tools-config-input-wide" id="memoryDbPath" placeholder="data/memory.db" value="data/memory.db">
+                            <span class="tools-config-desc">Path to the SQLite database file for persistent memory storage. The bot will save memory data here so it persists across restarts.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="server-form-actions" style="margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="saveMemoryDbPath()">💾 Save Memory Database Path</button>
+                    <button class="btn btn-secondary" onclick="resetMemoryDbPath()">🔄 Reset to Default</button>
+                    <span id="memoryDbStatusText" class="system-prompt-status" style="margin-left: 12px;">Loading...</span>
                 </div>
             </div>
         </div>

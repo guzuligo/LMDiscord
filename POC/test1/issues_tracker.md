@@ -907,6 +907,70 @@ _No open issues._
 
 ---
 
+### REQ-004: Discord Bot Integration (MEMORY-004)
+
+| Field | Value |
+|-------|-------|
+| **ID** | REQ-004 |
+| **Date** | 2026-05-26 |
+| **Status** | ✅ Solved |
+| **Severity** | Medium |
+| **Description** | Integrate memory system with Discord bot session lifecycle |
+| **Implementation** | 1. Added MemoryManager to bot_core.py with shared DB path |
+  2. _on_session_started(): Injects wake-up memory into system prompt on new session |
+  3. _on_session_ended(): Saves conversation summary to memory, updates wake-up memory |
+  4. _on_session_cleanup(): Prunes low-importance memories on session cleanup |
+  5. Wired hooks into _handle_new_session_message() and clear_session() |
+  6. Memory save and pruning run as background tasks (non-blocking) |
+| **Files Modified** | src/discord_bot/bot_core.py |
+
+
+### CONCEPT-001: Wake-up Memory System
+
+| Field | Value |
+|-------|-------|
+| **ID** | CONCEPT-001 |
+| **Date** | 2026-05-26 |
+| **Status** | ✅ Solved |
+| **Severity** | Medium |
+| **Description** | Compact summary of recent conversations shown at session start |
+| **Implementation** | 1. Uses MemoryManager.get_wake_up_memory(user_id) to retrieve per-user wake-up memory |
+  2. Uses MemoryManager.generate_sleep_summary() to update on session end |
+  3. Content injected into system prompt before conversation starts |
+  4. Truncated to ~500 chars for compactness |
+| **Files Modified** | src/discord_bot/bot_core.py |
+
+
+
+### FIX-MEMORY-001: LM Studio Not Calling memory_tool to Save Data
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-MEMORY-001 |
+| **Date** | 2026-05-26 |
+| **Status** | ✅ Solved |
+| **Severity** | Critical |
+| **Description** | LM Studio was not calling the memory_tool to save conversation data. The memory system was not persisting any data. |
+| **Root Cause** | 1. `memory_tool` was not registered in the tools system — `tool_executor.py` had no handlers for memory operations 2. The `operation` field from LM Studio tool call was not being popped from args before passing **args to `execute()`, causing `TypeError: execute() got multiple values for keyword argument 'operation'` |
+| **Fix Applied** | 1. Added `memory_tool` case handlers in `tool_executor.py` for all operations (save, search, update, delete, list, summarize, clear) 2. Added `pop('operation')` from args before passing **args to `self.executor.execute()` to prevent duplicate kwarg error 3. Added memory_tool import and registration in `bot_core.py` |
+| **Files Modified** | `src/discord_bot/tool_executor.py`, `src/discord_bot/bot_core.py`, `src/tools/builtins/__init__.py` |
+
+---
+
+### FIX-MEMORY-002: Default Memory Database Path Changed to user/data/memory/memory.db
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-MEMORY-002 |
+| **Date** | 2026-05-26 |
+| **Status** | ✅ Solved |
+| **Severity** | Low |
+| **Description** | Default memory database path was `data/memory.db` which was inconsistent with the project structure. Changed to `user/data/memory/memory.db` for better organization. |
+| **Fix Applied** | 1. Changed default in `memorylite.py` `__init__()` parameter 2. Changed default in `config.py` `memory_db_path` property and `get_memory_config()` 3. Updated `DEFAULT_MEMORY_DB_PATH` in `settings.js` |
+| **Files Modified** | `src/memory/memorylite.py`, `src/config.py`, `src/static/lib/settings.js` |
+
+---
+
 ## Potential Issues (To Monitor)
 
 ### 🆕 STATUSMSG-001: Status Message Now Requires LLM-Generated Text
@@ -924,6 +988,58 @@ _No open issues._
 ---
 
 ## Potential Issues (To Monitor)
+
+---
+
+### ✅ CONCEPT-003: MemoryBot Architecture with Multi-Turn Search
+
+| Field | Value |
+|-------|-------|
+| **ID** | CONCEPT-003 |
+| **Date** | 2026-05-26 |
+| **Status** | ✅ Completed |
+
+---
+
+### 🆕 CONCEPT-004: Channel Search Sliding Window (Planned Enhancement)
+
+| Field | Value |
+|-------|-------|
+| **ID** | CONCEPT-004 |
+| **Date** | 2026-05-26 |
+| **Status** | 📋 Documented, Enhancement Planned |
+| **Severity** | Low |
+| **Description** | Add sliding window support to `channel_search` so the LM can fetch non-contiguous message windows from different points in channel history. Currently, `channel_search` fetches at most 50 messages per channel. If the content the LM is looking for is older than the 50 most recent messages, it gets nothing. |
+| **Proposed Parameters** | **`offset`** (integer, default 0): Number of most recent messages to skip before fetching. **`windows`** (integer, default 1, max 5): Number of non-contiguous windows to fetch. Each window is `limit` messages, separated by `limit` skipped messages. |
+| **Example Usage** | `channel_search(channel="this", offset=50, limit=50)` → Skips messages 1-50, fetches 51-100. `channel_search(channel="this", offset=0, limit=20, windows=3)` → Window 1: messages 1-20, Window 2: messages 71-90, Window 3: messages 141-160. |
+| **Result Format** | Results grouped by window with headers: `[Window 1: Messages 1-20]`, `[Window 2: Messages 71-90]`, etc. |
+| **Design Decisions** | 1. **Max windows = 5**: Prevents excessive API calls (5 × 50 = 250 messages max per channel). 2. **Non-contiguous windows**: Each window is separated by `limit` skipped messages, creating a "skip pattern" that lets the LM jump through history efficiently. 3. **Backward compatibility**: `offset=0, windows=1` (defaults) preserves current behavior. 4. **Discord.py compatibility**: Uses `after` parameter with message objects to skip N messages from history. |
+| **Files To Modify** | `src/tools/builtins/channel_search.py` (tool schema + description), `src/discord_bot/bot_core.py` (message fetching with offset/windows), `src/discord_bot/tool_executor.py` (pass new parameters through) |
+| **Implementation Notes** | Discord.py's `channel.history()` supports `after` parameter with a message object. To skip N messages, fetch N messages and use the last one as the `after` cursor. For multiple windows, repeat this process N times. |
+
+---
+
+### 🆕 BUG-015: Channel Search 50-Message Limit is Restrictive (Planned Enhancement)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-015 |
+| **Date** | 2026-05-26 |
+| **Status** | 📋 Documented, Enhancement Planned |
+| **Severity** | Medium |
+| **Description** | The `channel_search` tool currently fetches at most 50 messages per channel. If the content the LM is looking for is older than the 50 most recent messages, it gets nothing. The LM has no way to "look further back" in the channel history. |
+| **Current Behavior** | `limit` parameter capped at 50. If the search target is beyond the 50 most recent messages, no results are returned. |
+| **Desired Behavior** | Implement a sliding window approach that allows the LM to skip past recent messages and fetch older ones. |
+
+| **Date Completed** | 2026-05-26 |
+| **Severity** | Medium |
+| **Description** | Implement a specialized MemoryBot sub-bot with fresh isolated context that handles memory search operations, protecting the main conversation context from being saturated with irrelevant memory results. |
+| **Architecture** | Main Bot requests memory search → MemoryBot (fresh context) calls memory_recall → Memory System returns results → MemoryBot filters noise and distills findings → Main Bot receives only relevant info |
+| **Design Decisions** | 1. **Name**: MemoryBot 2. **Single vs Multiple**: One shared MemoryBot per session 3. **Synchronous vs Async**: Synchronous - Main Bot waits for response 4. **Fallback**: If MemoryBot unavailable, Main Bot calls memory tools directly |
+| **Implementation** | **Phase 1**: Created `src/memory/memorybot.py` with `search_memories()`, `filter_results()`, `distill_results()`, `run_search()` methods. **Phase 2**: Created `src/memory/memorybot_prompt.py` with system prompt template, user prompt template, refinement prompt, and helper functions. **Phase 3**: Wired into `src/memory/__init__.py` exports. **Phase 4**: Added topic tracking, multi-turn support (max 3 turns), timeout expiration (60s), query refinement logic — all built into MemoryBot class. |
+| **Files Created** | `src/memory/memorybot.py`, `src/memory/memorybot_prompt.py` |
+| **Files Modified** | `src/memory/__init__.py` (added MemoryBot and prompt exports) |
+| **Features** | 1. Isolated session management with topic tracking 2. Multi-turn search with query refinement (max 3 turns) 3. Timeout-based context expiration (60s) 4. Completion signal detection (`[SEARCH_COMPLETE]`, `[NO_RELEVANT_MEMORIES]`) 5. System prompt template with context flush rules 6. Query refinement prompt for when initial search returns no results 7. Exported via `src/memory/__init__.py` for easy import |
 
 ---
 
@@ -1194,6 +1310,22 @@ _No open issues._
 
 ---
 
+### 🆕 BUG-002: image_describe Fails on Discord CDN Images — "This content is no longer available"
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-002 |
+| **Date** | 2026-05-26 |
+| **Status** | ✅ Solved |
+| **Severity** | High |
+| **Description** | When LM Studio calls `image_describe` with a Discord CDN attachment URL, the download fails with "This content is no longer available" error. The error page is Discord's HTML response, not a 404 — the CDN returns `text/html` content type instead of the actual image. |
+| **Root Cause** | Discord CDN attachment URLs require proper HTTP headers (User-Agent, Referer) to be treated as legitimate browser requests. The `SafeImageDownloader` was making raw `aiohttp` requests without these headers, causing Discord's CDN to return an error page instead of the image. |
+| **Fix Applied** | **1. Auto User-Agent injection**: Modified `_download_with_session()` to automatically add a browser-like `User-Agent` header (`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36...`) for Discord CDN hosts (`cdn.discordapp.com`, `media.discordapp.net`). <br> **2. Content-type error retry**: Added a second retry path that triggers when the initial response has an unexpected content type (e.g., `text/html` error page). This retries with a `Referer: https://discord.com` header. <br> **3. Improved logging**: Added detailed logging for each download attempt, retry, and success/failure outcome. |
+| **Files Modified** | `src/discord_bot/image_downloader.py` → `_download_with_session()` (User-Agent injection), `download_image()` (content-type error retry path) |
+| **Testing** | Pending — requires live test with Discord image attachment |
+
+---
+
 ### 🆕 BUG-011: Channel Name Resolution Fails for `#general` (Treated as ID, Not Name)
 
 | Field | Value |
@@ -1208,5 +1340,22 @@ _No open issues._
 | **Fix Applied** | 1. **`#` prefix fallback**: When `int(spec[1:])` raises `ValueError`, now tries the stripped text as a channel name (case-insensitive) before returning `None`. <br> 2. **Case-insensitive name lookup**: Built a `mapping_lower` dict (`{name.lower(): cid}`) used for all name-based lookups (`#`, `@`, and plain text). <br> 3. **Better debug logging**: All resolution failures now include available channel names in the log message. <br> 4. **Updated docstring**: Documents all supported formats including `#general` as channel name. |
 | **Supported Formats** | `#123456789` (numeric ID), `#general` (channel name), `@channelname` (channel name), `this`/`current` (active session), `123456789` (plain ID), `general` (plain name) — all case-insensitive for names |
 | **Files Modified** | `src/discord_bot/bot_core.py` → `resolve_channel()` method |
+
+---
+
+### 🆕 BUG-014: channel_search Cannot Fetch Image URLs from Referenced Messages
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-014 |
+| **Date** | 2026-05-26 |
+| **Date Solved** | 2026-05-26 |
+| **Status** | ✅ Solved |
+| **Severity** | High |
+| **Description** | When the LM Studio model wanted to describe an image referenced in a Discord message, it used `channel_search` with `message_id` parameter. However, `channel_search` results did not include image URLs from the referenced message. The LM received empty image data and could not proceed with `image_describe`. |
+| **Root Cause** | 1. `channel_search` tool did not support fetching a specific message by `message_id` — it only searched recent messages by text. 2. When `message_id` was passed, the tool ignored it and performed a regular channel search. 3. The `fetch_message_by_id` method existed in `bot_core.py` but was not wired into `channel_search`. 4. Image URLs were not extracted and displayed in channel_search results. |
+| **Fix Applied** | **1. Added `get_message_by_id()` public method** in `bot_core.py` — wraps `fetch_message_by_id()` for external access. **2. Updated `channel_search` tool** — when `message_id` is provided, fetches that specific message instead of searching channel history. **3. Added image URL extraction** — `channel_search` now extracts and displays image URLs from message attachments in the result. **4. Updated `tool_executor.py`** — passes `message_id` through to `channel_search` and handles the new message-by-ID flow. |
+| **Files Modified** | `src/discord_bot/bot_core.py` (added `get_message_by_id()` public method), `src/tools/builtins/channel_search.py` (added `message_id` support, image URL extraction), `src/discord_bot/tool_executor.py` (updated handlers to pass `message_id`, display image URLs in results) |
+| **Live Test Verification** | ✅ Verified 2026-05-26: User sent "What about this?" with image attachment → LM called `channel_search` with `message_id` → Tool fetched the message and extracted image URL → LM called `image_describe` with the URL → Image described successfully → Full pipeline working. |
 
 ---

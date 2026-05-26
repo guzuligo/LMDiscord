@@ -452,3 +452,31 @@ class Config:
         for key, value in config.items():
             self._data["tools_config"][key] = value
         self.save()
+
+    # ====================================================================
+    # Memory Configuration Properties
+    # ====================================================================
+
+    @property
+    def memory_db_path(self) -> str:
+        """Get the memory database file path."""
+        return self.get("memory_config", "db_path", "user/data/memory/memory.db")
+
+    @memory_db_path.setter
+    def memory_db_path(self, value: str) -> None:
+        """Set the memory database file path."""
+        self.set("memory_config", "db_path", value)
+
+    def get_memory_config(self) -> dict:
+        """Get all memory configuration as a dict."""
+        mc = self._data.get("memory_config", {})
+        return {
+            "db_path": mc.get("db_path", "user/data/memory/memory.db")
+        }
+
+    def set_memory_config(self, config: dict) -> None:
+        """Set memory configuration from a dict."""
+        self._data.setdefault("memory_config", {})
+        for key, value in config.items():
+            self._data["memory_config"][key] = value
+        self.save()

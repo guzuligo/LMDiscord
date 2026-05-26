@@ -22,8 +22,11 @@ Integration:
 """
 
 import json
+import logging
 
 from ..base import BaseTool, ToolResult
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelSearchTool(BaseTool):
@@ -89,6 +92,10 @@ class ChannelSearchTool(BaseTool):
                     "type": "string",
                     "description": "Optional contextual feedback from the LM about what the user is looking for. Helps prioritize and frame results. Include the user's original question or intent here."
                 },
+                "message_id": {
+                    "type": "string",
+                    "description": "Optional Discord message ID. If provided, fetches that specific message to get its image attachments. Use this when the user referenced a specific message with an image."
+                },
                 "tell_user_you_are_working": {
                     "type": "string",
                     "description": "A short, friendly message to show the user while you work. E.g. 'Let me check what we were talking about...' or 'Looking through recent messages...'. This replaces the generic status message."
@@ -97,7 +104,7 @@ class ChannelSearchTool(BaseTool):
             "required": []
         }
 
-    def execute(self, messages: list = None, **kwargs) -> ToolResult:
+    async def execute(self, messages: list = None, **kwargs) -> ToolResult:
         """Format pre-fetched channel messages into a structured result.
         
         The bot layer fetches messages via Discord.py async API and passes
@@ -107,6 +114,9 @@ class ChannelSearchTool(BaseTool):
         Each message dict includes Discord jump link data (message_id,
         channel_id, guild_id) so the LM can reference specific messages
         with clickable links in its responses.
+        
+        If a message_id is provided in kwargs, the tool will attempt to
+        fetch that specific message to get its image attachments.
         
         Args:
             messages: List of message dicts from bot layer, each containing:
@@ -121,7 +131,12 @@ class ChannelSearchTool(BaseTool):
                 - replied_to_author (str|None): author being replied to
                 - replied_to_content (str|None): content being replied to
                 - has_image (bool): whether message has image attachment
-            **kwargs: Additional arguments (ignored)
+            **kwargs: Additional arguments including:
+                - message_id (str): Optional Discord message ID to fetch
+                - search_query (str): Optional text filter
+                - username (str): Optional author filter
+                - compress_long (bool): Whether to truncate long messages
+                - bot (callable): Optional callable that returns the DiscordBot instance
             
         Returns:
             ToolResult with content as formatted text summary of messages.
@@ -129,6 +144,34 @@ class ChannelSearchTool(BaseTool):
             (https://discord.com/channels/{guild}/{channel}/{message}).
         """
         try:
+            # Extract message_id for fetching specific message attachments
+            message_id = kwargs.get("message_id")
+            bot_instance = kwargs.get("bot")
+            
+            # If message_id provided and bot available, fetch specific message for image URLs
+            if message_id and bot_instance:
+                try:
+                    # Extract channel_id from messages or use first message's channel
+                    target_channel_id = None
+                    if messages and len(messages) > 0:
+                        target_channel_id = messages[0].get("channel_id")
+                    
+                    if target_channel_id:
+                        msg_data = await bot_instance.get_message_by_id(
+                            int(target_channel_id), int(message_id)
+                        )
+                        if msg_data and msg_data.get("message"):
+                            fetched_msg = msg_data["message"]
+                            logger.info(
+                                f"[channel_search] Fetched message {message_id}: "
+                                f"has_image={fetched_msg.get('has_image', False)}, "
+                                f"image_urls={fetched_msg.get('image_urls', [])}"
+                            )
+                            # Add the fetched message to the beginning of results
+                            messages.insert(0, fetched_msg)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch message {message_id} for image URLs: {e}")
+            
             if not messages:
                 return ToolResult(
                     success=False,
@@ -192,9 +235,10 @@ class ChannelSearchTool(BaseTool):
                 entry_parts.append(f"**{display_name}** ({author}) — {timestamp}:")
                 entry_parts.append(f"  {content}")
 
-                # Image indicator
-                if has_image:
-                    entry_parts.append("  [📷 Image attached]")
+                # Image indicator — include actual URLs for LM to use
+                if has_image and msg.get("image_urls"):
+                    for url in msg["image_urls"]:
+                        entry_parts.append(f"  [📷 Image: {url}]")
 
                 formatted_messages.append("\n".join(entry_parts))
 

@@ -79,6 +79,12 @@ class ToolCallHandler:
                 await self._handle_channel_search(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
                 )
+            elif func_name == "memory_tool":
+                result = await self._handle_memory_tool(
+                    func_args, messages_for_lm, tool_call_id, get_bot_instance
+                )
+                if result:
+                    return result
             else:
                 tool_result = f"Unknown tool: {func_name}"
                 messages_for_lm.append({
@@ -151,6 +157,12 @@ class ToolCallHandler:
                 await self._handle_channel_search_active(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
                 )
+            elif func_name == "memory_tool":
+                result = await self._handle_memory_tool_active(
+                    func_args, messages_for_lm, tool_call_id, get_bot_instance
+                )
+                if result:
+                    return result
             else:
                 messages_for_lm.append({
                     "role": "tool",
@@ -624,6 +636,9 @@ class ToolCallHandler:
                 })
                 return
 
+            # Extract message_id for fetching specific message attachments
+            message_id = args.get("message_id")
+            
             # Fetch messages using the bot's async method with unified channel parameter
             result = await bot.get_channel_messages(
                 channel=str(channel),
@@ -636,6 +651,27 @@ class ToolCallHandler:
             messages = result.get("messages", [])
             available_channels = result.get("available_channels", {})
 
+            # Format the result for LM Studio
+            # If message_id was provided, fetch that specific message for image URLs
+            if message_id and messages:
+                try:
+                    target_channel_id = messages[0].get("channel_id") if messages else None
+                    if target_channel_id:
+                        msg_data = await bot.get_message_by_id(
+                            int(target_channel_id), int(message_id)
+                        )
+                        if msg_data and msg_data.get("message"):
+                            fetched_msg = msg_data["message"]
+                            logger.info(
+                                f"[channel_search] Fetched message {message_id}: "
+                                f"has_image={fetched_msg.get('has_image', False)}, "
+                                f"image_urls={fetched_msg.get('image_urls', [])}"
+                            )
+                            # Add the fetched message to the beginning of results
+                            messages.insert(0, fetched_msg)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch message {message_id} for image URLs: {e}")
+            
             # Format the result for LM Studio
             if not messages:
                 error_msg = result.get("error", "No messages found matching the specified criteria.")
@@ -675,6 +711,12 @@ class ToolCallHandler:
                     result_lines.append(entry_line)
                     result_lines.append(f"  CONTENT: {content}")
 
+                    # Append image URLs so the LM can use image_describe
+                    image_urls = msg.get("image_urls", [])
+                    if image_urls:
+                        urls_str = ", ".join(image_urls)
+                        result_lines.append(f"  IMAGES: {urls_str}")
+
                     # Append Discord jump link so the LM can reference it
                     if message_id and msg_channel_id and guild_id:
                         jump_link = f"https://discord.com/channels/{guild_id}/{msg_channel_id}/{message_id}"
@@ -708,6 +750,114 @@ class ToolCallHandler:
                 "tool_call_id": tool_call_id,
                 "content": f"Error during channel search: {str(e)}"
             })
+
+    async def _handle_memory_tool(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        get_bot_instance: Optional[Any] = None
+    ) -> Optional[str]:
+        """Handle memory_tool call (new session variant).
+
+        Executes memory operations (save, search, retrieve, list, delete,
+        statistics, search_recent, search_by_importance) via MemoryTool.
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            get_bot_instance: Optional callable that returns the DiscordBot instance
+
+        Returns:
+            Tool result content string, or None to continue the loop
+        """
+        try:
+            args = json.loads(func_args)
+            operation = args.pop("operation", "")
+
+            if get_bot_instance is None:
+                logger.warning("[memory_tool] No bot instance provided")
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "Error: Bot instance not available for memory_tool"
+                })
+                return None
+
+            bot = get_bot_instance()
+            if bot is None:
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "Error: Bot not available for memory_tool"
+                })
+                return None
+
+            memory_tool = bot._memory_tool
+            if memory_tool is None:
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "Error: Memory tool not initialized"
+                })
+                return None
+
+            # Execute the memory operation
+            result = memory_tool.execute(operation, **args)
+
+            if result.success:
+                tool_content = result.content
+            else:
+                tool_content = f"Error: {result.error}"
+
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": tool_content
+            })
+            logger.info(f"[memory_tool] Executed operation '{operation}' successfully")
+            return None
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing memory_tool args: {e}")
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error: Invalid arguments for memory_tool: {str(e)}"
+            })
+            return None
+        except Exception as e:
+            logger.error(f"Error in memory_tool: {e}", exc_info=True)
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error during memory operation: {str(e)}"
+            })
+            return None
+
+    async def _handle_memory_tool_active(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        get_bot_instance: Optional[Any] = None
+    ) -> Optional[Dict]:
+        """Handle memory_tool call (active session variant).
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            get_bot_instance: Optional callable that returns the DiscordBot instance
+
+        Returns:
+            Dict with 'farewell' key if end_session was called, None otherwise
+        """
+        await self._handle_memory_tool(
+            func_args, messages_for_lm, tool_call_id, get_bot_instance
+        )
+        return None
 
     async def _handle_channel_search_active(
         self,

@@ -679,6 +679,52 @@ def set_tools_config():
     })
 
 
+# ==================== Memory Database Path Settings ====================
+
+@app.route("/api/settings/memory_db_path", methods=["GET"])
+def get_memory_db_path():
+    """Get the current memory database path setting."""
+    return jsonify({
+        "success": True,
+        "memory_db_path": config.memory_db_path
+    })
+
+
+@app.route("/api/settings/memory_db_path", methods=["POST"])
+def set_memory_db_path():
+    """Update the memory database path setting."""
+    data = request.get_json()
+    db_path = data.get("memory_db_path", "data/memory.db")
+    
+    if not db_path or not db_path.strip():
+        return jsonify({
+            "success": False,
+            "error": "memory_db_path cannot be empty"
+        }), 400
+    
+    config.memory_db_path = db_path
+    config.save()
+    
+    # Apply to Discord bot if running — recreate MemoryTool with new path
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        from src.tools.builtins.memory_tool import MemoryTool
+        new_memory_tool = MemoryTool(db_path=db_path)
+        _bot._memory_tool = new_memory_tool
+        _bot._memory_tool_path = db_path
+        # Re-register in tool registry
+        _bot._tool_registry.unregister(_bot._memory_tool)
+        _bot._tool_registry.register(new_memory_tool)
+        logger.info(f"MemoryTool recreated with db_path={db_path}", module="app")
+    
+    logger.info(f"Memory DB path set to: {db_path}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "memory_db_path": config.memory_db_path
+    })
+
+
 # ==================== Blueprint Registration ====================
 
 # Create blueprints for modular routing

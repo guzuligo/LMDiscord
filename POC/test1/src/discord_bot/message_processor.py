@@ -110,6 +110,9 @@ class MessageProcessor:
         try:
             # Track failed tool turns for retry logic (failed turns don't count against limit)
             failed_tool_turns: List[int] = []
+            # Track per-tool-type call counts to prevent specific tool infinite loops
+            tool_call_counts: Dict[str, int] = {}
+            MAX_TOOL_CALLS_PER_TOOL = 3
             for turn in range(self._max_tool_turns):
                 logger.info(f"{'Active session' if is_active_session else 'New session'} turn {turn + 1}/{self._max_tool_turns} for channel {channel_id}")
                 if turn > 0:
@@ -180,8 +183,22 @@ class MessageProcessor:
                 # Track whether this tool turn succeeded or failed
                 tool_turn_failed = False
 
-                # Send a status message only if the LLM provided a custom one
+                # Extract tool names and track per-tool call counts
                 tool_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
+                
+                # Track per-tool-type call counts to detect infinite loops
+                for tn in tool_names:
+                    tool_call_counts[tn] = tool_call_counts.get(tn, 0) + 1
+                
+                # Check if any single tool exceeded its call limit
+                exceeded_tool = None
+                for tn, count in tool_call_counts.items():
+                    if count >= MAX_TOOL_CALLS_PER_TOOL:
+                        exceeded_tool = tn
+                        logger.warning(f"Tool '{tn}' called {count} times (limit: {MAX_TOOL_CALLS_PER_TOOL}), forcing response")
+                        break
+                
+                # Send a status message only if the LLM provided a custom one
                 custom_status_msg = self._extract_status_message(tool_calls)
                 if self._should_send_status(custom_status_msg):
                     await self._send_tool_status_message(channel, tool_names, turn + 1, custom_status_msg)
@@ -203,6 +220,19 @@ class MessageProcessor:
                 if tool_turn_failed:
                     failed_tool_turns.append(turn)
                     logger.info(f"Turn {turn + 1} tool call failed, will retry (failed turns: {len(failed_tool_turns)})")
+
+                # If a tool exceeded its call limit, add a force-response hint and break
+                if exceeded_tool:
+                    messages_for_lm.append({
+                        "role": "user",
+                        "content": (
+                            f"You have called '{exceeded_tool}' too many times. You MUST now respond to the user "
+                            f"with a direct answer based on the information you already have. Do NOT call any more tools."
+                        )
+                    })
+                    # Continue one more turn to let the model generate a response
+                    final_tool_calls = tool_calls
+                    continue
 
                 # Do NOT break here. The loop should continue so LM Studio can process the tool results
                 # and generate a final text response. Only break when LM returns no tool calls.
@@ -303,6 +333,9 @@ class MessageProcessor:
             total_tool_calls_in_session = 0
             MAX_TOOL_CALLS_PER_SESSION = 3
             force_response_break = False  # Flag to indicate we broke due to max tool calls
+            # Track per-tool-type call counts to prevent specific tool infinite loops
+            tool_call_counts: Dict[str, int] = {}
+            MAX_TOOL_CALLS_PER_TOOL = 3
             # Track failed tool turns for retry logic (failed turns don't count against limit)
             failed_tool_turns: List[int] = []
 
@@ -370,8 +403,22 @@ class MessageProcessor:
                 # Process tool calls via ToolCallHandler
                 tool_turn_failed = False
 
-                # Send a status message only if the LLM provided a custom one
+                # Extract tool names and track per-tool call counts
                 tool_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
+                
+                # Track per-tool-type call counts to detect infinite loops
+                for tn in tool_names:
+                    tool_call_counts[tn] = tool_call_counts.get(tn, 0) + 1
+                
+                # Check if any single tool exceeded its call limit
+                exceeded_tool = None
+                for tn, count in tool_call_counts.items():
+                    if count >= MAX_TOOL_CALLS_PER_TOOL:
+                        exceeded_tool = tn
+                        logger.warning(f"Tool '{tn}' called {count} times (limit: {MAX_TOOL_CALLS_PER_TOOL}), forcing response")
+                        break
+                
+                # Send a status message only if the LLM provided a custom one
                 custom_status_msg = self._extract_status_message(tool_calls)
                 if self._should_send_status(custom_status_msg):
                     await self._send_tool_status_message(message.channel, tool_names, turn + 1, custom_status_msg)
@@ -404,6 +451,19 @@ class MessageProcessor:
 
                 # Track total tool calls and break if too many (prevents infinite loops)
                 total_tool_calls_in_session += len(tool_calls) if tool_calls else 0
+                
+                # If a tool exceeded its call limit, add a force-response hint and break
+                if exceeded_tool:
+                    messages_for_lm.append({
+                        "role": "user",
+                        "content": (
+                            f"You have called '{exceeded_tool}' too many times. You MUST now respond to the user "
+                            f"with a direct answer based on the information you already have. Do NOT call any more tools."
+                        )
+                    })
+                    force_response_break = True
+                    break
+                
                 if total_tool_calls_in_session >= MAX_TOOL_CALLS_PER_SESSION:
                     logger.warning(f"Max tool calls ({MAX_TOOL_CALLS_PER_SESSION}) reached for channel {channel_id}, forcing response")
                     # Add a hint message to prompt the model to respond

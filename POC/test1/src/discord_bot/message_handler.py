@@ -223,7 +223,7 @@ class MessageHandler:
             "You have access to tools:\n"
             "- 'image_describe': Call this ONLY when the user explicitly asks for an image to be described, analyzed, or identified. Pass the image URL directly to this tool — it will be automatically downloaded and processed.\n"
             "- 'image_compare': Call this when the user wants to compare 2-3 images side by side. Pass image URLs as an array. Optionally include a comparison_prompt for specific comparison focus.\n"
-            "- 'channel_search': Call this to read recent messages from Discord channels to gather context for conversation. Returns a list of recent messages with author, content, timestamp, and reply info. Use this when you need to understand ongoing conversations, find specific information, or gather context before responding.\n"
+            "- 'channel_search': Call this to read recent messages from Discord channels to gather context for conversation. Returns a list of recent messages with author, content, timestamp, reply info, and image attachment URLs. Use this when you need to understand ongoing conversations, find specific information, or gather context before responding.\n"
             "  Channel specification (the 'channel' parameter):\n"
             "    - '#123456789' — search by channel ID (e.g., '#1503498099081871470')\n"
             "    - '@channelname' — search by channel name (e.g., '@c3', '@general')\n"
@@ -235,6 +235,7 @@ class MessageHandler:
             "IMPORTANT: Do not call image_describe for every image. Only call it when the user clearly wants a detailed description.\n"
             "IMPORTANT: After calling image_describe, you will receive the description in the tool result. DO NOT call image_describe again for the same image. Use the description to respond.\n"
             "IMPORTANT: For channel_search, you can use '#ID' for channel ID, '@name' for channel name, 'this' for current channel, or leave empty to search all channels. You do NOT need to ask the user for channel IDs.\n"
+            "IMPORTANT: When channel_search results show 'IMAGES:' with Discord CDN URLs, you can call the 'image_describe' tool with those URLs to get a description of the image. Pass the URL directly to image_describe.\n"
             "IMPORTANT: When calling any tool, ALWAYS include a 'tell_user_you_are_working' argument with a short, in-character status message so the user knows you are working. Make it sound natural and match your personality (e.g., 'Let me check that for you...', 'Looking through recent messages...', 'Analyzing that image now...'). This message will be posted to Discord immediately while the tool runs.\n"
         )
         

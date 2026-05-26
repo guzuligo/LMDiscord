@@ -37,6 +37,10 @@ from src.tools.registry import ToolRegistry
 from src.tools.builtins.image_describe import ImageDescribeTool
 from src.tools.builtins.image_compare import ImageCompareTool
 from src.tools.builtins.channel_search import ChannelSearchTool
+from src.tools.builtins.memory_tool import MemoryTool
+
+# Import memory manager
+from src.memory.memory_manager import MemoryManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -92,9 +96,25 @@ class DiscordBot:
         self._image_describe_tool = ImageDescribeTool()
         self._image_compare_tool = ImageCompareTool()
         self._channel_search_tool = ChannelSearchTool()
+        
+        # Determine memory database path from config
+        memory_db_path = "data/memory.db"
+        if config is not None and hasattr(config, "memory_db_path"):
+            memory_db_path = config.memory_db_path
+        self._memory_tool_path = memory_db_path
+        self._memory_tool = MemoryTool(db_path=memory_db_path)
+        
+        # Initialize MemoryManager for session lifecycle integration
+        self._memory_manager = MemoryManager(
+            db_path=memory_db_path,
+            keyword_count=8,
+            recall_limit=5,
+        )
+        
         self._tool_registry.register(self._image_describe_tool)
         self._tool_registry.register(self._image_compare_tool)
         self._tool_registry.register(self._channel_search_tool)
+        self._tool_registry.register(self._memory_tool)
         
         # Get tool definitions for LM Studio
         self._tool_definitions = self._tool_registry.get_all_definitions()
@@ -511,6 +531,9 @@ class DiscordBot:
                 guild_id=str(message.guild.id) if message.guild else "dm"
             )
 
+            # REQ-004 / CONCEPT-001: Inject wake-up memory into system prompt
+            await self._on_session_started(channel_id, user_id, author_name)
+
             # Handle via message handler
             await self._message_handler.handle_new_session(
                 message=message,
@@ -758,6 +781,20 @@ class DiscordBot:
         Args:
             channel_id: Discord channel ID
         """
+        # REQ-004: Save conversation to memory before clearing
+        session_info = self._session_manager.get_session(channel_id)
+        if session_info:
+            user_id = session_info.get("user_id", "")
+            author_name = session_info.get("author_name", "")
+            # Run memory save in background (non-blocking)
+            try:
+                import asyncio
+                asyncio.create_task(
+                    self._on_session_ended(channel_id, user_id, author_name)
+                )
+            except Exception as e:
+                logger.error(f"Failed to schedule memory save for channel {channel_id}: {e}")
+
         if channel_id in self._conversation_history:
             del self._conversation_history[channel_id]
         self._session_manager.clear(channel_id)
@@ -767,6 +804,13 @@ class DiscordBot:
             del self._pending_messages[channel_id]
         # Clear token usage for this channel
         self._token_tracker.clear_channel_usage(channel_id)
+        
+        # REQ-004: Prune low-importance memories
+        try:
+            asyncio.create_task(self._on_session_cleanup(channel_id))
+        except Exception as e:
+            logger.error(f"Failed to schedule memory pruning for channel {channel_id}: {e}")
+        
         logger.info(f"Cleared session for channel {channel_id}")
 
     # --- Token Usage ---
@@ -997,6 +1041,101 @@ class DiscordBot:
         )
         return None
 
+    async def fetch_message_by_id(
+        self, channel_id: int, message_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch a specific message by ID and extract its attachments.
+        
+        This method is used when the LM needs to get image URLs from a
+        specific message (e.g., when the user shared an image in a
+        referenced message that wasn't in the recent history).
+        
+        Args:
+            channel_id: Discord channel ID
+            message_id: Discord message ID
+            
+        Returns:
+            Dict with message data including image_urls, or None if not found
+        """
+        if not self.client.is_ready():
+            logger.warning("Bot not ready, cannot fetch message")
+            return None
+        
+        try:
+            channel = self.client.get_channel(channel_id)
+            if channel is None:
+                # Try to get from guild
+                for guild in self.client.guilds:
+                    channel = guild.get_channel(channel_id)
+                    if channel is not None:
+                        break
+            
+            if channel is None:
+                logger.warning(f"Channel {channel_id} not found for message fetch")
+                return None
+            
+            msg = await channel.fetch_message(message_id)
+            
+            # Extract image attachments
+            image_urls = []
+            has_image = False
+            attachments = []
+            
+            if hasattr(msg, 'attachments') and msg.attachments:
+                attachments = list(msg.attachments)
+                for attachment in attachments:
+                    if attachment.filename:
+                        ext = attachment.filename.lower().split('.')[-1]
+                        if ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'):
+                            has_image = True
+                            image_urls.append(attachment.url)
+            
+            content = (msg.content or "").strip()
+            if not content:
+                content = "[Image/Attachment only]"
+            
+            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Check for reply
+            is_reply = False
+            replied_to_author = None
+            replied_to_content = None
+            if msg.reference:
+                try:
+                    referenced_msg = await msg.channel.fetch_message(msg.reference.message_id)
+                    if referenced_msg:
+                        is_reply = True
+                        replied_to_author = referenced_msg.author.name
+                        replied_to_content = (referenced_msg.content or "").strip()[:100]
+                except (discord.NotFound, AttributeError):
+                    pass
+            
+            return {
+                "message_id": msg.id,
+                "channel_id": channel.id,
+                "guild_id": msg.guild.id if msg.guild else None,
+                "author": msg.author.name,
+                "display_name": msg.author.display_name,
+                "content": content,
+                "timestamp": timestamp,
+                "is_reply": is_reply,
+                "replied_to_author": replied_to_author,
+                "replied_to_content": replied_to_content,
+                "has_image": has_image,
+                "image_urls": image_urls,
+                "attachments": [a.filename for a in attachments]
+            }
+            
+        except discord.NotFound:
+            logger.warning(f"Message {message_id} not found in channel {channel_id}")
+            return None
+        except discord.Forbidden:
+            logger.warning(f"No permission to fetch message {message_id} in channel {channel_id}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching message {message_id}: {e}", exc_info=True)
+            return None
+    
     async def _fetch_channel_messages(
         self,
         channel_id: int,
@@ -1039,14 +1178,9 @@ class DiscordBot:
 
             # Fetch messages from history
             messages = []
-            bot_id = self.client.user.id if self.client.user else None
 
             async for msg in channel.history(limit=limit, oldest_first=False):
-                # Optionally skip bot's own messages
-                if bot_id and msg.author.id == bot_id:
-                    continue
-
-                # Optionally skip messages from other bots
+                # Optionally skip messages from other bots (but always include bot's own messages)
                 if filter_bots and msg.author.bot:
                     continue
 
@@ -1076,15 +1210,66 @@ class DiscordBot:
                     except (discord.NotFound, AttributeError):
                         pass
 
-                # Check for image attachment
+                # Check for image attachment — extract URLs and metadata
+                image_urls = []
                 has_image = False
-                if hasattr(msg, 'attachments') and msg.attachments:
-                    for attachment in msg.attachments:
+                attachments = []
+                
+                # ALWAYS fetch the full message to ensure attachments are populated.
+                # channel.history() may not fully populate attachments for messages
+                # that were sent before the bot started or for messages where the
+                # gateway didn't include full attachment data.
+                try:
+                    full_msg = await channel.fetch_message(msg.id)
+                    if hasattr(full_msg, 'attachments') and full_msg.attachments:
+                        attachments = list(full_msg.attachments)
+                        logger.debug(
+                            f"[fetch_message] Message {msg.id}: found {len(attachments)} attachment(s) "
+                            f"from fetch_message: {[a.filename for a in attachments]}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[fetch_message] Message {msg.id}: no attachments found via fetch_message"
+                        )
+                except discord.NotFound:
+                    logger.warning(f"[fetch_message] Message {msg.id} not found (may have been deleted)")
+                except discord.Forbidden:
+                    logger.warning(f"[fetch_message] No permission to fetch message {msg.id}")
+                except AttributeError:
+                    logger.warning(f"[fetch_message] channel.fetch_message is not available")
+                except Exception as e:
+                    logger.warning(f"[fetch_message] Error fetching message {msg.id}: {e}")
+                
+                # Fallback: If fetch_message didn't return attachments, try the history object
+                if not attachments:
+                    if hasattr(msg, 'attachments') and msg.attachments:
+                        attachments = list(msg.attachments)
+                        logger.debug(
+                            f"[history fallback] Message {msg.id}: found {len(attachments)} attachment(s) "
+                            f"from history: {[a.filename for a in attachments]}"
+                        )
+                
+                # Extract image URLs from attachments
+                if attachments:
+                    for attachment in attachments:
                         if attachment.filename:
                             ext = attachment.filename.lower().split('.')[-1]
                             if ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'):
                                 has_image = True
-                                break
+                                # Extract the attachment URL (Discord CDN URL)
+                                image_urls.append(attachment.url)
+                                   
+                # Log image detection status for debugging
+                if attachments:
+                    logger.info(
+                        f"[image_detection] Message {msg.id} by {author}: "
+                        f"{len(attachments)} total attachment(s), "
+                        f"{len(image_urls)} image(s): {image_urls}"
+                    )
+                else:
+                    logger.debug(
+                        f"[image_detection] Message {msg.id} by {author}: no attachments"
+                    )
 
                 messages.append({
                     "message_id": msg.id,
@@ -1097,7 +1282,8 @@ class DiscordBot:
                     "is_reply": is_reply,
                     "replied_to_author": replied_to_author,
                     "replied_to_content": replied_to_content,
-                    "has_image": has_image
+                    "has_image": has_image,
+                    "image_urls": image_urls  # List of Discord CDN URLs for image attachments
                 })
 
             # Reverse to show oldest first (chronological order)
@@ -1171,6 +1357,31 @@ class DiscordBot:
         
         return {"messages": all_messages}
 
+    async def get_message_by_id(
+        self, channel_id: int, message_id: int
+    ) -> Dict[str, Any]:
+        """Public method to fetch a specific message by ID for tool execution.
+        
+        This method is called by the tool_executor to fetch a specific message
+        and its attachments when the LM needs to get image URLs from a
+        specific message.
+        
+        Args:
+            channel_id: Discord channel ID
+            message_id: Discord message ID
+            
+        Returns:
+            Dict with 'message' key containing the message data, or error info
+        """
+        result = await self.fetch_message_by_id(channel_id, message_id)
+        if result:
+            return {"message": result}
+        else:
+            return {
+                "message": None,
+                "error": f"Message {message_id} not found in channel {channel_id}"
+            }
+
     async def get_channel_messages(
         self,
         channel: str = "",
@@ -1240,6 +1451,104 @@ class DiscordBot:
                     msg["content"] = content[:200] + "..."
         
         return {"messages": messages}
+
+    # ====================================================================
+    # MEMORY INTEGRATION (REQ-004, CONCEPT-001)
+    # ====================================================================
+
+    async def _on_session_started(self, channel_id: int, user_id: str, author_name: str) -> None:
+        """REQ-004 / CONCEPT-001: On new session, inject wake-up memory into system prompt.
+        
+        Retrieves relevant memories for the user and prepends them to the
+        system prompt so the LM has persistent context from the start.
+        
+        Args:
+            channel_id: Discord channel ID
+            user_id: Discord user ID
+            author_name: Author's Discord username
+        """
+        # Get wake-up memory for this user
+        wake_up = self._memory_manager.get_wake_up_memory(user_id)
+        
+        if wake_up and wake_up.get("content"):
+            context = f"\n\n=== PERSISTENT CONTEXT (from previous conversations) ===\n{wake_up['content']}\n=== End of persistent context ===\n"
+            self._message_handler.set_system_prompt(self.system_prompt + context)
+            logger.info(f"Injected wake-up memory for user {user_id} (channel {channel_id})")
+        else:
+            logger.info(f"No wake-up memory for user {user_id} (channel {channel_id})")
+
+    async def _on_session_ended(self, channel_id: int, user_id: str, author_name: str) -> None:
+        """REQ-004 / REQ-005: On session end, save conversation summary to memory.
+        
+        Extracts keywords, assigns memory type, and stores the conversation
+        as a persistent memory entry. Also updates wake-up memory.
+        
+        Args:
+            channel_id: Discord channel ID
+            user_id: Discord user ID
+            author_name: Author's Discord username
+        """
+        history = self._conversation_history.get(channel_id, [])
+        if not history:
+            logger.info(f"No conversation history for channel {channel_id}, skipping memory save")
+            return
+
+        # Extract conversation text from history (skip system message)
+        conversation_parts = []
+        for msg in history:
+            if isinstance(msg, dict) and msg.get("role") != "system":
+                content = msg.get("content", "")
+                if content:
+                    conversation_parts.append(content)
+
+        conversation_text = "\n".join(conversation_parts)
+        if not conversation_text.strip():
+            logger.info(f"Empty conversation for channel {channel_id}, skipping memory save")
+            return
+
+        # Truncate to ~2000 chars to avoid oversized memories
+        if len(conversation_text) > 2000:
+            conversation_text = conversation_text[:1997] + "..."
+
+        try:
+            # Create session memory
+            result = self._memory_manager.create_session_memory(
+                session_id=f"channel_{channel_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+                conversation=conversation_text,
+                user_id=user_id,
+                guild_id="",
+                channel_id=str(channel_id),
+                topic=author_name,
+                memory_type=self._memory_manager.assign_memory_type(conversation_text),
+                explicit_weight=0.5,
+            )
+
+            logger.info(
+                f"Saved session memory for user {user_id} (channel {channel_id}): "
+                f"memory_id={result['memory_id']}, type={result['type']}, "
+                f"keywords={result['keywords']}"
+            )
+
+            # Update wake-up memory (CONCEPT-001)
+            self._memory_manager.generate_sleep_summary(
+                session_id=f"channel_{channel_id}",
+                conversation=conversation_text,
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save session memory for channel {channel_id}: {e}", exc_info=True)
+
+    async def _on_session_cleanup(self, channel_id: int) -> None:
+        """REQ-004: On session cleanup, prune low-importance memories.
+        
+        Args:
+            channel_id: Discord channel ID being cleaned up
+        """
+        try:
+            stats = self._memory_manager.prune(keep=100, min_importance=0.1)
+            logger.info(f"Memory pruning after session cleanup (channel {channel_id}): {stats}")
+        except Exception as e:
+            logger.error(f"Memory pruning failed for channel {channel_id}: {e}", exc_info=True)
 
     # ====================================================================
     # Tools Configuration (REASONING-FIX)
