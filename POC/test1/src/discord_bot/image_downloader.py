@@ -58,11 +58,49 @@ class SafeImageDownloader:
         logger.warning(f"BLOCKED: hostname '{hostname}' is NOT in allowed list: {self.allowed_hostnames}")
         return False, f"Hostname '{hostname}' not in allowed hostnames"
 
+    async def _download_with_session(self, url: str, headers: Optional[dict] = None) -> bytes:
+        """Download image using a session with optional custom headers.
+        
+        Args:
+            url: URL to download from
+            headers: Optional extra headers to include
+            
+        Returns:
+            Raw image bytes
+            
+        Raises:
+            ValueError: If content type is invalid or size limit exceeded
+            aiohttp.ClientResponseError: If HTTP request fails
+        """
+        timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=timeout, headers=headers) as response:
+                # Validate content type
+                content_type = response.content_type.lower()
+                if content_type not in ALLOWED_CONTENT_TYPES:
+                    raise ValueError(f"Blocked: disallowed content type '{content_type}' (expected one of {ALLOWED_CONTENT_TYPES})")
+                logger.info(f"Content type allowed: {content_type}")
+
+                # Download with size limit
+                raw_bytes = b""
+                async for chunk in response.content.iter_chunked(1024 * 1024):  # 1MB chunks
+                    raw_bytes += chunk
+                    if len(raw_bytes) > MAX_IMAGE_SIZE:
+                        raise ValueError(f"Blocked: image exceeds size limit ({len(raw_bytes)} bytes > {MAX_IMAGE_SIZE} bytes)")
+                    logger.debug(f"Downloaded {len(raw_bytes)} bytes so far...")
+
+        return raw_bytes
+
     async def download_image(self, url: str) -> bytes:
         """Safely download an image from a URL.
         
         Validates hostname against whitelist, checks content type,
         enforces size limits and timeouts.
+        
+        For Discord CDN URLs (cdn.discordapp.com, media.discordapp.net), if the
+        initial download gets a 404, retries with a Referer header pointing to
+        discord.com. This works around Discord's CDN behavior where deleted or
+        moved images require a valid Referer to resolve redirects.
         
         Args:
             url: URL to download from
@@ -84,25 +122,24 @@ class SafeImageDownloader:
         logger.info(f"Downloading image from allowed host: {hostname}")
 
         # Step 2: Download with timeout and size limit
-        timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=timeout) as response:
-                # Step 3: Validate content type
-                content_type = response.content_type.lower()
-                if content_type not in ALLOWED_CONTENT_TYPES:
-                    raise ValueError(f"Blocked: disallowed content type '{content_type}' (expected one of {ALLOWED_CONTENT_TYPES})")
-                logger.info(f"Content type allowed: {content_type}")
-
-                # Step 4: Download with size limit
-                raw_bytes = b""
-                async for chunk in response.content.iter_chunked(1024 * 1024):  # 1MB chunks
-                    raw_bytes += chunk
-                    if len(raw_bytes) > MAX_IMAGE_SIZE:
-                        raise ValueError(f"Blocked: image exceeds size limit ({len(raw_bytes)} bytes > {MAX_IMAGE_SIZE} bytes)")
-                    logger.debug(f"Downloaded {len(raw_bytes)} bytes so far...")
-
-        logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname}")
-        return raw_bytes
+        try:
+            raw_bytes = await self._download_with_session(url)
+            logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname}")
+            return raw_bytes
+        except (aiohttp.ClientResponseError, ValueError) as e:
+            error_str = str(e).lower()
+            # For Discord CDN hosts, retry with Referer header on 404
+            if hostname in ("cdn.discordapp.com", "media.discordapp.net") and ("404" in error_str or "not found" in error_str):
+                logger.info(f"Got 404 for {url}, retrying with Referer header (image may have been deleted/moved)")
+                try:
+                    referer_headers = {"Referer": "https://discord.com"}
+                    raw_bytes = await self._download_with_session(url, headers=referer_headers)
+                    logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} with Referer header")
+                    return raw_bytes
+                except Exception as retry_error:
+                    logger.warning(f"Retry with Referer also failed for {url}: {retry_error}")
+                    raise ValueError(f"Image not found (404) even with Referer retry: {url}") from e
+            raise
 
 
 # Global safe image downloader instance

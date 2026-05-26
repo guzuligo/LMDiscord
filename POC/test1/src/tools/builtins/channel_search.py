@@ -84,6 +84,14 @@ class ChannelSearchTool(BaseTool):
                     "type": "boolean",
                     "description": "If true, truncate messages longer than 200 characters with '...'",
                     "default": True
+                },
+                "user_feedback": {
+                    "type": "string",
+                    "description": "Optional contextual feedback from the LM about what the user is looking for. Helps prioritize and frame results. Include the user's original question or intent here."
+                },
+                "tell_user_you_are_working": {
+                    "type": "string",
+                    "description": "A short, friendly message to show the user while you work. E.g. 'Let me check what we were talking about...' or 'Looking through recent messages...'. This replaces the generic status message."
                 }
             },
             "required": []

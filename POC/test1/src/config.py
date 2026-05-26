@@ -43,7 +43,8 @@ class Config:
             "tool_max_tokens": 2048,
             "tool_temperature": 0.3,
             "final_max_tokens": 8192,
-            "use_tool_calling": True
+            "use_tool_calling": True,
+            "max_tool_turns": 5
         },
         "servers": {}
     }
@@ -423,6 +424,16 @@ class Config:
         """Set tool calling enabled setting."""
         self.set("tools_config", "use_tool_calling", value)
 
+    @property
+    def max_tool_turns(self) -> int:
+        """Get maximum number of tool turns per message processing."""
+        return self.get("tools_config", "max_tool_turns", 5)
+
+    @max_tool_turns.setter
+    def max_tool_turns(self, value: int) -> None:
+        """Set maximum number of tool turns per message processing."""
+        self.set("tools_config", "max_tool_turns", value)
+
     def get_tools_config(self) -> dict:
         """Get all tools configuration as a dict."""
         tc = self._data.get("tools_config", {})
@@ -431,7 +442,8 @@ class Config:
             "tool_max_tokens": tc.get("tool_max_tokens", 2048),
             "tool_temperature": tc.get("tool_temperature", 0.3),
             "final_max_tokens": tc.get("final_max_tokens", 8192),
-            "use_tool_calling": tc.get("use_tool_calling", True)
+            "use_tool_calling": tc.get("use_tool_calling", True),
+            "max_tool_turns": tc.get("max_tool_turns", 5)
         }
 
     def set_tools_config(self, config: dict) -> None:

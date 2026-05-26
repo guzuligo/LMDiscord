@@ -60,6 +60,7 @@ class MessageHandler:
         tool_max_tokens: int = 2048,
         tool_temperature: float = 0.3,
         final_max_tokens: int = 8192,
+        max_tool_turns: int = 5,
         bot_instance: Any = None
     ):
         """Initialize message handler."""
@@ -78,6 +79,9 @@ class MessageHandler:
         self._tool_max_tokens = tool_max_tokens
         self._tool_temperature = tool_temperature
         self._final_max_tokens = final_max_tokens
+
+        # Tools config
+        self._max_tool_turns = max(1, min(max_tool_turns, 10))
 
         # Set up tool executor
         self._tool_executor = tool_executor_instance
@@ -102,7 +106,8 @@ class MessageHandler:
             executor=self._executor,
             lm_studio_lock=lm_studio_lock,
             safe_downloader=self._safe_downloader,
-            bot_instance=bot_instance
+            bot_instance=bot_instance,
+            max_tool_turns=self._max_tool_turns
         )
 
     @property
@@ -195,7 +200,8 @@ class MessageHandler:
         conversation_history: Dict[int, List[Dict[str, str]]] = None,
         typing_callback: Callable = None,
         on_message_callback: Optional[Callable] = None,
-        image_attachments: Optional[List[Dict]] = None
+        image_attachments: Optional[List[Dict]] = None,
+        reply_context: Optional[str] = None
     ) -> None:
         """Handle a new session message (mention or reply)."""
         channel = message.channel
@@ -229,6 +235,7 @@ class MessageHandler:
             "IMPORTANT: Do not call image_describe for every image. Only call it when the user clearly wants a detailed description.\n"
             "IMPORTANT: After calling image_describe, you will receive the description in the tool result. DO NOT call image_describe again for the same image. Use the description to respond.\n"
             "IMPORTANT: For channel_search, you can use '#ID' for channel ID, '@name' for channel name, 'this' for current channel, or leave empty to search all channels. You do NOT need to ask the user for channel IDs.\n"
+            "IMPORTANT: When calling any tool, ALWAYS include a 'tell_user_you_are_working' argument with a short, in-character status message so the user knows you are working. Make it sound natural and match your personality (e.g., 'Let me check that for you...', 'Looking through recent messages...', 'Analyzing that image now...'). This message will be posted to Discord immediately while the tool runs.\n"
         )
         
         # REASONING-FIX: Add reasoning brevity instruction if enabled
@@ -241,6 +248,11 @@ class MessageHandler:
                 "4. Keep all responses concise — especially tool call arguments and final answers.\n"
                 "5. When you have the answer, respond immediately without extra reasoning steps.\n"
             )
+
+        # Include reply context so the LM knows what message is being replied to
+        if reply_context:
+            content = f"[Replying to: {reply_context}]\n\n{content}"
+            logger.info(f"Included reply context in new session message")
 
         # Include image attachment info in content
         if image_attachments:
@@ -290,7 +302,8 @@ class MessageHandler:
         on_message_callback: Optional[Callable] = None,
         image_attachments: Optional[List[Dict]] = None,
         nick_changed: bool = False,
-        display_changed: bool = False
+        display_changed: bool = False,
+        reply_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """Handle batched messages during an active session."""
         if not content or not content.strip():
@@ -302,6 +315,11 @@ class MessageHandler:
             content, author_name, author_display, author_nick,
             session_user, initial_nick, nick_changed
         )
+
+        # Include reply context so the LM knows what message is being replied to
+        if reply_context:
+            formatted_content = f"[Replying to: {reply_context}]\n\n{formatted_content}"
+            logger.info(f"Included reply context in active session message")
 
         # Include image attachment info
         if image_attachments:

@@ -909,6 +909,22 @@ _No open issues._
 
 ## Potential Issues (To Monitor)
 
+### 🆕 STATUSMSG-001: Status Message Now Requires LLM-Generated Text
+
+| Field | Value |
+|-------|-------|
+| **ID** | STATUSMSG-001 |
+| **Date** | 2026-05-26 |
+| **Status** | ✅ Implemented |
+| **Severity** | Medium |
+| **Description** | Removed hardcoded tool status message fallback. Status messages are now only sent when the LLM provides a custom `tell_user_you_are_working` message via tool call arguments. This ensures status messages are always in-character and natural, rather than generic hardcoded text like "⏳ Searching channel history...". |
+| **Fix Applied** | 1. `_should_send_status()` in `message_processor.py` now takes `custom_message` parameter and returns `True` only if non-None 2. System prompt in `message_handler.py` instructs LLM to always include `tell_user_you_are_working` argument with in-character status messages 3. `_send_tool_status_message()` still has a generic fallback for display text, but the message is only sent if the LLM provided a custom one |
+| **Files Modified** | `src/discord_bot/message_processor.py`, `src/discord_bot/message_handler.py` |
+
+---
+
+## Potential Issues (To Monitor)
+
 ---
 
 ### 🆕 PENDING-001: Error Handling in channel.send() After LM Studio Failures
@@ -932,12 +948,12 @@ _No open issues._
 |-------|-------|
 | **ID** | PENDING-002 |
 | **Date** | 2026-05-21 |
-| **Status** | 🔄 Open |
+| **Status** | ✅ Solved (2026-05-26) |
 | **Severity** | Low |
 | **Description** | Both `_process_session()` and `process_active_session()` use `for turn in range(3)` which hard-codes a maximum of 3 turns for tool calling. If a tool requires more than 2 retries (turn 0 initial + turn 1 tool result + turn 2 retry), the loop exits silently without attempting further tool calls. |
-| **Code Location** | `src/discord_bot/message_processor.py` → `_process_session()` line 106, `process_active_session()` line 254 |
-| **Recommended Fix** | Make the turn limit configurable (e.g., `max_tool_turns=5` parameter) or increase the default to handle complex tool chains. |
-| **Files To Modify** | `src/discord_bot/message_processor.py` |
+| **Fix Applied** | 1. Added `max_tool_turns` parameter to `MessageProcessor.__init__()` (default 5, clamped 1-10) 2. Added `max_tool_turns` to `MessageHandler.__init__()` and passed through to processor 3. Added `max_tool_turns` to `tools_config` in `config.py` (default 5) 4. Updated `bot_core.py` to read `max_tool_turns` from config and pass to `MessageHandler` 5. Turn loops in `_process_session()` and `process_active_session()` now use `range(max_tool_turns)` instead of `range(3)` 6. Added retry logic: when Turn N returns empty content after tool processing, automatically retry with doubled max_tokens (up to 8192) |
+| **Warning** | The retry logic (doubling max_tokens on empty responses) can cause the model to use more tokens than expected. Monitor token usage after this change. If a retry also returns empty, OOM detection kicks in and posts a user-friendly error. |
+| **Files Modified** | `src/discord_bot/message_processor.py`, `src/discord_bot/message_handler.py`, `src/discord_bot/bot_core.py`, `src/config.py` |
 
 ---
 
@@ -1162,15 +1178,19 @@ _No open issues._
 
 ---
 
-### 🆕 PENDING-006: Memory Module Documentation Consolidated Under src/memory/
+### 🆕 BUG-011: Channel Name Resolution Fails for `#general` (Treated as ID, Not Name)
 
 | Field | Value |
 |-------|-------|
-| **ID** | PENDING-006 |
-| **Date** | 2026-05-21 |
+| **ID** | BUG-011 |
+| **Date** | 2026-05-26 |
+| **Date Solved** | 2026-05-26 |
 | **Status** | ✅ Solved |
-| **Severity** | Low |
-| **Description** | Memory module documentation (README, issues_tracker, progress) consolidated under `src/memory/` directory for better organization. |
-| **Files** | `src/memory/README.md`, `src/memory/issues_tracker.md`, `src/memory/progress.md` |
+| **Severity** | High |
+| **Description** | When the LM Studio model returns a channel specification like `#general` (a channel name prefixed with `#`), the `resolve_channel()` method fails to resolve it. It tries to parse `general` as an integer channel ID, gets a `ValueError`, and returns `None` instead of falling through to try it as a channel name. |
+| **Root Cause** | In `resolve_channel()`, the `#` prefix handler had two paths: (1) try `int(spec[1:])` for numeric IDs, and (2) on `ValueError`, just log a warning and return `None`. It never tried the stripped text as a channel name. Additionally, the plain text channel name lookup at the end was case-sensitive. |
+| **Fix Applied** | 1. **`#` prefix fallback**: When `int(spec[1:])` raises `ValueError`, now tries the stripped text as a channel name (case-insensitive) before returning `None`. <br> 2. **Case-insensitive name lookup**: Built a `mapping_lower` dict (`{name.lower(): cid}`) used for all name-based lookups (`#`, `@`, and plain text). <br> 3. **Better debug logging**: All resolution failures now include available channel names in the log message. <br> 4. **Updated docstring**: Documents all supported formats including `#general` as channel name. |
+| **Supported Formats** | `#123456789` (numeric ID), `#general` (channel name), `@channelname` (channel name), `this`/`current` (active session), `123456789` (plain ID), `general` (plain name) — all case-insensitive for names |
+| **Files Modified** | `src/discord_bot/bot_core.py` → `resolve_channel()` method |
 
 ---

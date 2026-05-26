@@ -32,6 +32,9 @@ class ToolCallHandler:
     ) -> Optional[str]:
         """Process tool calls from LM Studio (new session variant).
 
+        Processes ALL tool calls in the batch before returning, enabling
+        proper multi-tool-call support.
+
         Args:
             tool_calls: List of tool call dicts
             messages_for_lm: Messages list to append to
@@ -42,8 +45,12 @@ class ToolCallHandler:
             get_bot_instance: Optional callable that returns the DiscordBot instance
 
         Returns:
-            Response text, or None if end_session was called
+            Response text, or None if end_session was called or no special tools were used
         """
+        image_describe_results: List[str] = []
+        image_compare_results: List[str] = []
+        had_end_session = False
+
         for tool_call in tool_calls:
             func = tool_call.get("function", {})
             func_name = func.get("name", "")
@@ -53,22 +60,25 @@ class ToolCallHandler:
             logger.info(f"Turn {turn + 1}: LM Studio called tool: {func_name}")
 
             if func_name == "end_session":
-                return await self._handle_end_session(func_args, messages_for_lm, channel)
+                had_end_session = True
+                await self._handle_end_session(func_args, messages_for_lm, channel)
+                break  # Stop processing remaining tools after end_session
             elif func_name == "image_describe":
                 result = await self._handle_image_describe(
                     func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
                 )
-                return result
+                if result:
+                    image_describe_results.append(result)
             elif func_name == "image_compare":
                 result = await self._handle_image_compare(
                     func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
                 )
-                return result
+                if result:
+                    image_compare_results.append(result)
             elif func_name == "channel_search":
                 await self._handle_channel_search(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
                 )
-                return ""  # Signal: tool executed, continue loop for final response
             else:
                 tool_result = f"Unknown tool: {func_name}"
                 messages_for_lm.append({
@@ -76,6 +86,15 @@ class ToolCallHandler:
                     "tool_call_id": tool_call_id,
                     "content": tool_result
                 })
+
+        if had_end_session:
+            return None
+
+        # Return accumulated results from image tools (if any)
+        if image_describe_results:
+            return "\n\n".join(image_describe_results)
+        if image_compare_results:
+            return "\n\n".join(image_compare_results)
 
         return None  # Continue the loop for multi-turn
 
@@ -90,6 +109,9 @@ class ToolCallHandler:
     ) -> Optional[Dict]:
         """Process tool calls from LM Studio (active session variant).
 
+        Processes ALL tool calls in the batch before returning, enabling
+        proper multi-tool-call support.
+
         Args:
             tool_calls: List of tool call dicts
             messages_for_lm: Messages list to append to
@@ -101,6 +123,8 @@ class ToolCallHandler:
         Returns:
             Dict with 'farewell' key if end_session was called, None otherwise
         """
+        farewell_msg = None
+
         for tool_call in tool_calls:
             func = tool_call.get("function", {})
             func_name = func.get("name", "")
@@ -110,10 +134,10 @@ class ToolCallHandler:
             if func_name == "end_session":
                 try:
                     args = json.loads(func_args)
-                    farewell = args.get("farewell_message", "Goodbye!")
-                    return {"farewell": farewell}
+                    farewell_msg = args.get("farewell_message", "Goodbye!")
                 except (json.JSONDecodeError, AttributeError):
-                    return {"farewell": "Goodbye!"}
+                    farewell_msg = "Goodbye!"
+                break  # Stop processing remaining tools after end_session
 
             elif func_name == "image_describe":
                 await self._handle_image_describe_active(
@@ -127,13 +151,15 @@ class ToolCallHandler:
                 await self._handle_channel_search_active(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
                 )
-                return None  # Signal: tool executed, continue loop for final response
             else:
                 messages_for_lm.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "content": f"Unknown tool: {func_name}"
                 })
+
+        if farewell_msg is not None:
+            return {"farewell": farewell_msg}
 
         return None  # Continue the loop
 
@@ -572,10 +598,12 @@ class ToolCallHandler:
             search_query = args.get("search_query", "")
             username = args.get("username", "")
             compress_long = args.get("compress_long", True)
+            user_feedback = args.get("user_feedback", "")
 
             # Log channel spec for debugging
             channel_display = channel if channel else "(all channels)"
-            logger.info(f"[channel_search] Searching channel {channel_display} (limit={limit}, query='{search_query}')")
+            logger.info(f"[channel_search] Searching channel {channel_display} (limit={limit}, query='{search_query}')"
+                       f"{f', feedback={user_feedback[:60]}' if user_feedback else ''}")
 
             # Get bot instance and fetch messages
             if get_bot_instance is None:
@@ -654,6 +682,8 @@ class ToolCallHandler:
                 
                 result_lines.append(f"")
                 result_lines.append(f"=== END OF RESULTS ===")
+                if user_feedback:
+                    result_lines.append(f"USER CONTEXT: {user_feedback}")
                 result_lines.append(f"INSTRUCTIONS: Read the messages above. If the search query was '{search_query}', identify which messages contain this term and provide a direct answer to the user's original question.")
                 tool_content = "\n".join(result_lines)
 
