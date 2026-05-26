@@ -91,7 +91,8 @@ class DelayProcessor:
         pending_messages: Dict[int, List[Dict[str, str]]],
         handler_callback: Any,
         delay: Optional[int] = None,
-        image_attachments: Optional[List[Dict]] = None
+        image_attachments: Optional[List[Dict]] = None,
+        reply_context: Optional[str] = None
     ) -> None:
         """Process an active session message after a delay.
 
@@ -109,6 +110,7 @@ class DelayProcessor:
             handler_callback: Async callable for batch processing
             delay: Delay in seconds (uses default if None)
             image_attachments: List of image attachment dicts
+            reply_context: String with the referenced message content for Discord replies
         """
         try:
             actual_delay = delay if delay is not None else self._default_delay
@@ -136,7 +138,8 @@ class DelayProcessor:
             await handler_callback(
                 message, content, channel_id, author_name, author_display,
                 None, pending_messages=pending,
-                image_attachments=merged_attachments if merged_attachments else None
+                image_attachments=merged_attachments if merged_attachments else None,
+                reply_context=reply_context
             )
 
         except Exception as e:

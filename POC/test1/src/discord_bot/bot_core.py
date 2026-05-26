@@ -126,6 +126,7 @@ class DiscordBot:
             tool_max_tokens=tools_config.get('tool_max_tokens', 2048),
             tool_temperature=tools_config.get('tool_temperature', 0.3),
             final_max_tokens=tools_config.get('final_max_tokens', 8192),
+            max_tool_turns=tools_config.get('max_tool_turns', 5),
             bot_instance=self  # Pass self for channel_search tool
         )
         
@@ -387,20 +388,34 @@ class DiscordBot:
         mention_str_alt = f"<@!{self.client.user.id}>"
         is_mention = mention_str in message_content or mention_str_alt in message_content
         is_reply_to_bot = False
+        reply_context = None
 
         if message.reference and message.reference.message_id:
             try:
                 referenced_msg = await message.channel.fetch_message(message.reference.message_id)
-                if referenced_msg and referenced_msg.author == self.client.user:
-                    is_reply_to_bot = True
+                if referenced_msg:
+                    if referenced_msg.author == self.client.user:
+                        is_reply_to_bot = True
+                    # Extract reply context so the LM knows what message is being replied to
+                    ref_author = referenced_msg.author.display_name or referenced_msg.author.name
+                    ref_content = (referenced_msg.content or "").strip()
+                    # Truncate long messages to prevent context overflow (max 500 chars)
+                    if len(ref_content) > 500:
+                        ref_content = ref_content[:497] + "..."
+                    reply_context = f"{ref_author}: {ref_content}"
+                    logger.info(f"Reply context extracted: {reply_context[:80]}...")
             except discord.NotFound:
                 pass
+            except discord.Forbidden:
+                logger.warning("No permission to fetch referenced message for reply context")
 
         # Case 1: Active session - process with delay
         if self._session_manager.is_active(channel_id):
             await self._typing_indicator.show(message.channel)
             if image_attachments:
                 logger.info(f"Message has {len(image_attachments)} image attachment(s) in active session")
+            if reply_context:
+                logger.info(f"Active session reply context: {reply_context[:80]}...")
             asyncio.create_task(
                 self._delay_processor.process_active_session_with_delay(
                     message=message,
@@ -412,7 +427,8 @@ class DiscordBot:
                     pending_messages=self._pending_messages,
                     handler_callback=self._process_active_session_batch,
                     delay=None,
-                    image_attachments=image_attachments
+                    image_attachments=image_attachments,
+                    reply_context=reply_context
                 )
             )
 
@@ -425,11 +441,14 @@ class DiscordBot:
             await self._typing_indicator.show(message.channel)
             if image_attachments:
                 logger.info(f"Message has {len(image_attachments)} image attachment(s) in new session")
+            if reply_context:
+                logger.info(f"New session reply context: {reply_context[:80]}...")
             asyncio.create_task(
                 self._handle_new_session_message(
                     message, actual_content, "mention", channel_id, author_name,
                     author_display, author_nick, user_id,
-                    image_attachments=image_attachments
+                    image_attachments=image_attachments,
+                    reply_context=reply_context
                 )
             )
 
@@ -459,7 +478,8 @@ class DiscordBot:
     async def _handle_new_session_message(
         self, message, content, message_type, channel_id, author_name,
         author_display: str, author_nick: Optional[str], user_id: str,
-        image_attachments: Optional[List[Dict]] = None
+        image_attachments: Optional[List[Dict]] = None,
+        reply_context: Optional[str] = None
     ) -> None:
         """Handle a new session message.
 
@@ -473,6 +493,7 @@ class DiscordBot:
             author_nick: Author's per-server nickname (can be None, server-specific)
             user_id: Author's Discord user ID (immutable unique identifier)
             image_attachments: List of image attachment dicts
+            reply_context: String with the referenced message content for Discord replies
         """
         self._processing_lock[channel_id] = True
         try:
@@ -503,7 +524,8 @@ class DiscordBot:
                 conversation_history=self._conversation_history,
                 typing_callback=self._typing_indicator.show,
                 on_message_callback=self._on_message_callback,
-                image_attachments=image_attachments
+                image_attachments=image_attachments,
+                reply_context=reply_context
             )
 
             # Store token usage
@@ -517,7 +539,8 @@ class DiscordBot:
     async def _process_active_session_batch(
         self, message, content, channel_id, author_name,
         author_display, author_nick, pending_messages,
-        image_attachments: Optional[List[Dict]] = None
+        image_attachments: Optional[List[Dict]] = None,
+        reply_context: Optional[str] = None
     ) -> None:
         """Process active session message batch.
 
@@ -530,6 +553,7 @@ class DiscordBot:
             author_nick: Author's current per-server nickname (can be None)
             pending_messages: List of pending message dicts
             image_attachments: List of image attachment dicts
+            reply_context: String with the referenced message content for Discord replies
         """
         try:
             # Update session activity
@@ -560,7 +584,8 @@ class DiscordBot:
                 on_message_callback=self._on_message_callback,
                 image_attachments=image_attachments,
                 nick_changed=nick_changed,
-                display_changed=display_changed
+                display_changed=display_changed,
+                reply_context=reply_context
             )
             # result is a dict with 'usage' and 'should_end_session' keys
             usage = result.get("usage") if isinstance(result, dict) else None
@@ -882,57 +907,74 @@ class DiscordBot:
 
     def resolve_channel(self, channel_spec: str) -> Optional[int]:
         """Resolve a channel specification to a channel ID.
-        
+
+        Supports multiple formats and falls back gracefully:
+        - "#123456789" — numeric channel ID (prefix stripped)
+        - "#general"    — channel name (prefix stripped, case-insensitive)
+        - "@channelname" — channel name (prefix stripped, case-insensitive)
+        - "this" / "current" — current active session channel
+        - "123456789"   — plain numeric channel ID
+        - "general"     — plain channel name (case-insensitive)
+
         Args:
-            channel_spec: Channel specification. Formats:
-                - "#123456789" — channel ID
-                - "@channelname" — channel name (first match)
-                - "this" — current active session channel
-                - "current" — current active session channel
-        
+            channel_spec: Channel specification string
+
         Returns:
             Channel ID as integer, or None if not found
         """
         if not self.client.is_ready():
             return None
-        
-        spec = channel_spec.strip().lower()
-        
+
+        spec = channel_spec.strip()
+        spec_lower = spec.lower()
+
         # "this" or "current" → resolve from active session
-        if spec in ("this", "current"):
+        if spec_lower in ("this", "current"):
             active_channels = self._session_manager.get_active_channels()
             if active_channels:
-                # Return the most recent active channel
                 return int(active_channels[0])
             logger.warning("[resolve_channel] 'this' specified but no active session")
             return None
-        
-        # "#123456789" → channel ID
+
+        # Build case-insensitive channel mapping: {name_lower: channel_id}
+        mapping = self.get_channel_mapping()
+        mapping_lower = {name.lower(): cid for name, cid in mapping.items()}
+
+        # "#123456789" → numeric channel ID
+        # "#general"  → channel name (fall through to name lookup below)
         if spec.startswith("#"):
+            name_or_id = spec[1:].strip()
+            name_or_id_lower = name_or_id.lower()
+
+            # Try as numeric ID first
             try:
-                channel_id = int(spec[1:])
-                # Verify channel exists
+                channel_id = int(name_or_id)
                 channel = self.client.get_channel(channel_id)
                 if channel:
                     return channel_id
                 logger.warning(f"[resolve_channel] Channel {channel_id} not found")
                 return None
             except ValueError:
-                logger.warning(f"[resolve_channel] Invalid channel ID: {spec}")
+                # Not a number — try as channel name (case-insensitive)
+                if name_or_id_lower in mapping_lower:
+                    return int(mapping_lower[name_or_id_lower])
+                logger.warning(
+                    f"[resolve_channel] Channel not found: {name_or_id}. "
+                    f"Available: {list(mapping_lower.keys())[:10]}"
+                )
                 return None
-        
-        # "@channelname" → channel name lookup
+
+        # "@channelname" → channel name lookup (case-insensitive)
         if spec.startswith("@"):
-            channel_name = spec[1:].strip()
-            mapping = self.get_channel_mapping()
-            if channel_name in mapping:
-                return int(mapping[channel_name])
-            logger.warning(f"[resolve_channel] Channel not found: {channel_name}")
-            # Log available channels for debugging
-            available = list(mapping.keys())[:10]
-            logger.info(f"[resolve_channel] Available channels: {available}")
+            channel_name = spec[1:].strip().lower()
+            if channel_name in mapping_lower:
+                return int(mapping_lower[channel_name])
+            logger.warning(
+                f"[resolve_channel] Channel not found: {channel_name}. "
+                f"Available: {list(mapping_lower.keys())[:10]}"
+            )
             return None
-        
+
         # Plain number → assume channel ID
         try:
             channel_id = int(spec)
@@ -942,13 +984,15 @@ class DiscordBot:
             return None
         except ValueError:
             pass
-        
-        # Plain text → try as channel name
-        mapping = self.get_channel_mapping()
-        if spec in mapping:
-            return int(mapping[spec])
-        
-        logger.warning(f"[resolve_channel] Could not resolve channel: {channel_spec}")
+
+        # Plain text → try as channel name (case-insensitive)
+        if spec_lower in mapping_lower:
+            return int(mapping_lower[spec_lower])
+
+        logger.warning(
+            f"[resolve_channel] Could not resolve channel: {channel_spec}. "
+            f"Available: {list(mapping_lower.keys())[:10]}"
+        )
         return None
 
     async def _fetch_channel_messages(

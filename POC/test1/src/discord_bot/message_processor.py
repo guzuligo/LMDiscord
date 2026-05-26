@@ -9,6 +9,7 @@ Handles core message processing with LM Studio:
 """
 
 import asyncio
+import json
 import logging
 from typing import Dict, List, Any, Optional, Callable
 
@@ -31,7 +32,8 @@ class MessageProcessor:
         executor: Any = None,
         lm_studio_lock: Optional[Any] = None,
         safe_downloader: Optional[Any] = None,
-        bot_instance: Any = None
+        bot_instance: Any = None,
+        max_tool_turns: int = 5
     ):
         """Initialize message processor."""
         self.lm_studio_client = lm_studio_client
@@ -41,6 +43,7 @@ class MessageProcessor:
         self._tools = tools or []
         self._safe_downloader = safe_downloader
         self._bot_instance = bot_instance
+        self._max_tool_turns = max(1, min(max_tool_turns, 10))  # Clamp between 1-10
         self._tool_call_handler = ToolCallHandler()
         self._lm_caller = LMCaller(
             lm_studio_client=lm_studio_client,
@@ -105,8 +108,10 @@ class MessageProcessor:
         final_usage = None
 
         try:
-            for turn in range(3):
-                logger.info(f"{'Active session' if is_active_session else 'New session'} turn {turn + 1} for channel {channel_id}")
+            # Track failed tool turns for retry logic (failed turns don't count against limit)
+            failed_tool_turns: List[int] = []
+            for turn in range(self._max_tool_turns):
+                logger.info(f"{'Active session' if is_active_session else 'New session'} turn {turn + 1}/{self._max_tool_turns} for channel {channel_id}")
                 if turn > 0:
                     await typing_callback(channel)
 
@@ -145,6 +150,8 @@ class MessageProcessor:
                 if not tool_calls:
                     # Check if response is empty after tool processing (max_tokens overflow)
                     if turn > 0 and response_text == "" and final_tool_calls is not None:
+                        # Check if we have retry budget (failed turns don't count against limit)
+                        effective_turns = turn - len(failed_tool_turns)
                         if max_tokens_override and max_tokens_override > self.max_tokens:
                             # Already retried with higher max_tokens and still empty → OOM or context too large
                             logger.warning(f"[max_tokens] Empty response even with max_tokens={max_tokens_override}. "
@@ -170,6 +177,15 @@ class MessageProcessor:
                     logger.info(f"Got final response on turn {turn + 1}")
                     break
 
+                # Track whether this tool turn succeeded or failed
+                tool_turn_failed = False
+
+                # Send a status message only if the LLM provided a custom one
+                tool_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
+                custom_status_msg = self._extract_status_message(tool_calls)
+                if self._should_send_status(custom_status_msg):
+                    await self._send_tool_status_message(channel, tool_names, turn + 1, custom_status_msg)
+
                 response_text = await self._tool_call_handler.process_tool_calls(
                     tool_calls, messages_for_lm, channel, turn,
                     self._safe_downloader,
@@ -177,12 +193,41 @@ class MessageProcessor:
                     get_bot_instance=lambda: self._bot_instance
                 )
 
-                if response_text is None and tool_calls:
-                    break
+                # Detect failed tool turns: tool called but result was error (tool role message with error content)
+                last_msgs = messages_for_lm[-3:]
+                for m in last_msgs:
+                    if m.get("role") == "tool" and "Error" in m.get("content", ""):
+                        tool_turn_failed = True
+                        break
+
+                if tool_turn_failed:
+                    failed_tool_turns.append(turn)
+                    logger.info(f"Turn {turn + 1} tool call failed, will retry (failed turns: {len(failed_tool_turns)})")
+
+                # Do NOT break here. The loop should continue so LM Studio can process the tool results
+                # and generate a final text response. Only break when LM returns no tool calls.
                 final_tool_calls = tool_calls
 
             if response_text and len(response_text) > 2000:
                 response_text = response_text[:1997] + "..."
+
+            # Fallback: if max turns exhausted with no text response, send something
+            if not response_text and final_tool_calls:
+                logger.warning(f"[empty_response] Channel {channel_id}: max turns exhausted with no text response. "
+                               f"final_tool_calls=present, failed_tool_turns={len(failed_tool_turns)}")
+                response_text = (
+                    "I've processed the available information but couldn't generate a complete response. "
+                    "This might be because the conversation context is too large. "
+                    "Please try starting a new session."
+                )
+            elif not response_text and final_tool_calls is None:
+                # LM returned empty content on turn 0 with no tool calls - pure LM failure
+                logger.warning(f"[empty_response] Channel {channel_id}: LM returned empty response on turn 0 "
+                               f"with no tool calls (pure LM silence)")
+                response_text = (
+                    "Sorry, I couldn't generate a response. This might be a temporary issue. "
+                    "Please try again or start a new session if the problem persists."
+                )
 
         except ConnectionError as e:
             logger.error(f"LM Studio connection error: {e}")
@@ -258,9 +303,11 @@ class MessageProcessor:
             total_tool_calls_in_session = 0
             MAX_TOOL_CALLS_PER_SESSION = 3
             force_response_break = False  # Flag to indicate we broke due to max tool calls
+            # Track failed tool turns for retry logic (failed turns don't count against limit)
+            failed_tool_turns: List[int] = []
 
-            for turn in range(4):  # Allow 4 turns: 3 tool calls + 1 final response
-                logger.info(f"Active session turn {turn + 1} for channel {channel_id}")
+            for turn in range(self._max_tool_turns):
+                logger.info(f"Active session turn {turn + 1}/{self._max_tool_turns} for channel {channel_id}")
                 if turn > 0:
                     await typing_callback(message.channel)
 
@@ -321,6 +368,14 @@ class MessageProcessor:
                     break
 
                 # Process tool calls via ToolCallHandler
+                tool_turn_failed = False
+
+                # Send a status message only if the LLM provided a custom one
+                tool_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
+                custom_status_msg = self._extract_status_message(tool_calls)
+                if self._should_send_status(custom_status_msg):
+                    await self._send_tool_status_message(message.channel, tool_names, turn + 1, custom_status_msg)
+
                 end_session_result = await self._tool_call_handler.process_tool_calls_active(
                     tool_calls, messages_for_lm, turn,
                     self._safe_downloader,
@@ -333,6 +388,17 @@ class MessageProcessor:
                     farewell_message = end_session_result.get("farewell")
                     response_text = None
                     break
+
+                # Detect failed tool turns: tool called but result was error
+                last_msgs = messages_for_lm[-3:]
+                for m in last_msgs:
+                    if m.get("role") == "tool" and "Error" in m.get("content", ""):
+                        tool_turn_failed = True
+                        break
+
+                if tool_turn_failed:
+                    failed_tool_turns.append(turn)
+                    logger.info(f"Active turn {turn + 1} tool call failed, will retry (failed turns: {len(failed_tool_turns)})")
 
                 final_tool_calls = tool_calls
 
@@ -348,8 +414,47 @@ class MessageProcessor:
                     force_response_break = True
                     break
 
+            # If we broke due to max tool calls, make one final LM call to get a text response
+            if force_response_break:
+                logger.info(f"Making final response call after max tool calls for channel {channel_id}")
+                try:
+                    await typing_callback(message.channel)
+                    final_response = await self._execute_lm_call(
+                        call_lm_studio_func, messages_for_lm, channel_id
+                    )
+                    final_choices = final_response.get("choices", [])
+                    if final_choices:
+                        final_message_data = final_choices[0].get("message", {})
+                        response_text = final_message_data.get("content", "")
+                        final_tool_calls_from_response = final_message_data.get("tool_calls", [])
+                        if final_tool_calls_from_response:
+                            logger.warning(f"Final response still had tool calls, discarding them")
+                        logger.info(f"Final response obtained: {repr(response_text[:100])}")
+                except Exception as e:
+                    logger.error(f"Failed to get final response after max tool calls: {e}")
+                    response_text = None
+
             if response_text and len(response_text) > 2000:
                 response_text = response_text[:1997] + "..."
+
+            # Fallback: if loop ended with no text response in active session
+            if not response_text and final_tool_calls:
+                logger.warning(f"[empty_response] Active session channel {channel_id}: "
+                               f"loop ended with no text response, final_tool_calls=present, "
+                               f"failed_tool_turns={len(failed_tool_turns)}")
+                response_text = (
+                    "I've processed the available information but couldn't generate a complete response. "
+                    "This might be because the conversation context is too large. "
+                    "Please try starting a new session."
+                )
+            elif not response_text and final_tool_calls is None:
+                # LM returned empty response with no tool calls - pure LM silence
+                logger.warning(f"[empty_response] Active session channel {channel_id}: "
+                               f"LM returned empty response with no tool calls (pure LM silence)")
+                response_text = (
+                    "Sorry, I couldn't generate a response. This might be a temporary issue. "
+                    "Please try again or start a new session if the problem persists."
+                )
 
         except Exception as e:
             error_str = str(e)
@@ -424,6 +529,22 @@ class MessageProcessor:
             )
         return await self._lm_caller.call(messages_for_lm, channel_id, self.use_tool_calling, max_tokens=effective_max_tokens)
 
+    def _should_send_status(self, custom_message: Optional[str]) -> bool:
+        """Decide whether to send a status message for this tool turn.
+
+        Only send a status message if the LLM provided a custom
+        `tell_user_you_are_working` message in the tool call arguments.
+        This ensures status messages are always in-character and natural,
+        rather than generic hardcoded text like "⏳ Searching channel history...".
+
+        Args:
+            custom_message: Custom status message from the LLM, or None.
+
+        Returns:
+            True if a status message should be sent.
+        """
+        return custom_message is not None
+
     def _is_oom_error(self, error_str: str) -> bool:
         """Check if an error indicates OOM (Out of Memory)."""
         oom_indicators = ["out of memory", "oom", "cuda out of memory", "runtime error", "500",
@@ -431,6 +552,73 @@ class MessageProcessor:
                          "max context", "too many tokens"]
         error_lower = error_str.lower()
         return any(indicator in error_lower for indicator in oom_indicators)
+
+    def _extract_status_message(self, tool_calls: List[Dict]) -> Optional[str]:
+        """Extract tell_user_you_are_working message from tool call arguments.
+
+        Iterates over tool calls and returns the first non-empty
+        tell_user_you_are_working value found.
+
+        Args:
+            tool_calls: List of tool call dicts from LM Studio response.
+
+        Returns:
+            Custom status message string, or None if not provided.
+        """
+        for tc in tool_calls:
+            try:
+                func = tc.get("function", {})
+                args = json.loads(func.get("arguments", "{}"))
+                msg = args.get("tell_user_you_are_working", "")
+                if msg:
+                    return msg.strip()
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        return None
+
+    async def _send_tool_status_message(
+        self, channel, tool_names: List[str], turn: int, custom_message: Optional[str] = None
+    ) -> None:
+        """Send a status message to Discord before executing time-consuming tools.
+
+        Provides user feedback so they know the bot is working instead of going silent.
+        If the LM provided a custom message via tell_user_you_are_working, use that
+        instead of the generic tool display text.
+
+        Args:
+            channel: Discord channel to send the message to
+            tool_names: List of tool names being executed
+            turn: Current turn number
+            custom_message: Optional LM-generated status message
+        """
+        if custom_message:
+            status_text = custom_message
+        else:
+            # Deduplicate tool names for cleaner display
+            unique_tools = list(dict.fromkeys(tool_names))
+
+            # Build a human-readable status message
+            tool_display = {
+                "channel_search": "🔍 Searching channel history",
+                "image_describe": "🖼️ Analyzing image",
+                "image_compare": "🖼️ Comparing images",
+                "comfyui_generate": "🎨 Generating image",
+                "memory_tool": "🧠 Accessing memory",
+                "math_calc": "🔢 Calculating",
+            }
+
+            status_parts = []
+            for tool in unique_tools:
+                display = tool_display.get(tool, f"⚙️ Running {tool}")
+                status_parts.append(display)
+
+            status_text = " | ".join(status_parts) + "..."
+
+        try:
+            await channel.send(f"⏳ {status_text}")
+            logger.info(f"Turn {turn}: Sent tool status message: {status_text}")
+        except Exception as e:
+            logger.warning(f"Failed to send tool status message: {e}")
 
     def _is_max_tokens_overflow(self, response: Dict) -> bool:
         """Check if response indicates max_tokens overflow (empty content)."""
