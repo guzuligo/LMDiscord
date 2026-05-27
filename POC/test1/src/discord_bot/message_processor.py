@@ -6,15 +6,19 @@ Handles core message processing with LM Studio:
 - process_active_session: Active session message processing
 - Delegates LM calls to LMCaller
 - Delegates tool calling to ToolCallHandler
+- Periodic status updates during multi-turn tool execution
+- Cancellation support via CancellationManager
 """
 
 import asyncio
 import json
 import logging
+import time
 from typing import Dict, List, Any, Optional, Callable
 
 from src.discord_bot.tool_executor import ToolCallHandler
 from src.discord_bot.lm_caller import LMCaller
+from src.discord_bot.cancellation import get_cancellation_manager
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +115,9 @@ class MessageProcessor:
             # Track failed tool turns for retry logic (failed turns don't count against limit)
             failed_tool_turns: List[int] = []
             # Track per-tool-type call counts to prevent specific tool infinite loops
+            # Increased from 3 to 5 to allow LM more attempts to find relevant context
             tool_call_counts: Dict[str, int] = {}
-            MAX_TOOL_CALLS_PER_TOOL = 3
+            MAX_TOOL_CALLS_PER_TOOL = 5
             for turn in range(self._max_tool_turns):
                 logger.info(f"{'Active session' if is_active_session else 'New session'} turn {turn + 1}/{self._max_tool_turns} for channel {channel_id}")
                 if turn > 0:
@@ -180,11 +185,29 @@ class MessageProcessor:
                     logger.info(f"Got final response on turn {turn + 1}")
                     break
 
+                # Check for pending messages between turns (real-time interruption)
+                pending_msg = await self.check_pending_messages(channel_id)
+                if pending_msg:
+                    logger.info(f"Pending message detected during turn {turn + 1}, interrupting tool processing")
+                    # Return a special result indicating interruption with pending message
+                    # This result will be passed back to message_handler which will process the pending message
+                    return {
+                        "response_text": None,
+                        "tool_calls": None,
+                        "usage": None,
+                        "interrupted": True,
+                        "pending_message": pending_msg
+                    }
+
                 # Track whether this tool turn succeeded or failed
                 tool_turn_failed = False
 
                 # Extract tool names and track per-tool call counts
                 tool_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
+                
+                # If we were interrupted, skip tool processing and continue to next iteration
+                if turn > 0 and pending_msg:
+                    continue
                 
                 # Track per-tool-type call counts to detect infinite loops
                 for tn in tool_names:
@@ -207,8 +230,22 @@ class MessageProcessor:
                     tool_calls, messages_for_lm, channel, turn,
                     self._safe_downloader,
                     make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
-                    get_bot_instance=lambda: self._bot_instance
+                    get_bot_instance=lambda: self._bot_instance,
+                    check_pending=lambda: self.check_pending_messages(channel_id)
                 )
+
+                # Check if processing was interrupted by a pending message
+                if isinstance(response_text, dict) and response_text.get("interrupted", False):
+                    pending_msg = response_text.get("pending_message")
+                    if pending_msg:
+                        logger.info(f"Processing interrupted by pending message during turn {turn + 1}")
+                        return {
+                            "response_text": None,
+                            "tool_calls": None,
+                            "usage": None,
+                            "interrupted": True,
+                            "pending_message": pending_msg
+                        }
 
                 # Detect failed tool turns: tool called but result was error (tool role message with error content)
                 last_msgs = messages_for_lm[-3:]
@@ -300,7 +337,12 @@ class MessageProcessor:
             actual_response = discord_response.content if hasattr(discord_response, 'content') else response_text
             asyncio.create_task(on_message_callback(actual_response))
 
-        return final_usage
+        return {
+            "usage": final_usage,
+            "response_text": response_text,
+            "tool_calls": final_tool_calls,
+            "interrupted": False
+        }
 
     async def process_active_session(
         self,
@@ -334,8 +376,9 @@ class MessageProcessor:
             MAX_TOOL_CALLS_PER_SESSION = 3
             force_response_break = False  # Flag to indicate we broke due to max tool calls
             # Track per-tool-type call counts to prevent specific tool infinite loops
+            # Increased from 3 to 5 to allow LM more attempts to find relevant context
             tool_call_counts: Dict[str, int] = {}
-            MAX_TOOL_CALLS_PER_TOOL = 3
+            MAX_TOOL_CALLS_PER_TOOL = 5
             # Track failed tool turns for retry logic (failed turns don't count against limit)
             failed_tool_turns: List[int] = []
 
@@ -400,6 +443,18 @@ class MessageProcessor:
                         continue
                     break
 
+                # Check for pending messages between turns (real-time interruption)
+                pending_msg = await self.check_pending_messages(channel_id)
+                if pending_msg:
+                    logger.info(f"Pending message detected during active session turn {turn + 1}, interrupting")
+                    # Return interruption result with pending message
+                    return {
+                        "usage": None,
+                        "should_end_session": False,
+                        "interrupted": True,
+                        "pending_message": pending_msg
+                    }
+
                 # Process tool calls via ToolCallHandler
                 tool_turn_failed = False
 
@@ -427,8 +482,21 @@ class MessageProcessor:
                     tool_calls, messages_for_lm, turn,
                     self._safe_downloader,
                     make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
-                    get_bot_instance=lambda: self._bot_instance
+                    get_bot_instance=lambda: self._bot_instance,
+                    check_pending=lambda: self.check_pending_messages(channel_id)
                 )
+
+                # Check if processing was interrupted by a pending message
+                if isinstance(end_session_result, dict) and end_session_result.get("interrupted", False):
+                    pending_msg = end_session_result.get("pending_message")
+                    if pending_msg:
+                        logger.info(f"Active session processing interrupted by pending message during turn {turn + 1}")
+                        return {
+                            "usage": None,
+                            "should_end_session": False,
+                            "interrupted": True,
+                            "pending_message": pending_msg
+                        }
 
                 if end_session_result:
                     should_end_session = True
@@ -695,3 +763,232 @@ class MessageProcessor:
         if content == "" and not message.get("tool_calls"):
             return True
         return False
+
+    # --- Periodic Status Updates & Cancellation ---
+
+    async def _check_cancellation(self, channel_id: int) -> bool:
+        """Check if cancellation was requested for this channel.
+        
+        Args:
+            channel_id: Discord channel ID
+            
+        Returns:
+            True if cancellation was requested (and event was reset)
+        """
+        manager = get_cancellation_manager()
+        return await manager.check_and_reset(channel_id)
+    
+    async def check_pending_messages(self, channel_id: int) -> Optional[Dict]:
+        """Check for pending messages that arrived during processing.
+        
+        This enables real-time message interleaving - if a new message
+        arrived while the bot was processing tool calls, it will be
+        returned here so the caller can interrupt and process it.
+        
+        Args:
+            channel_id: Discord channel ID
+            
+        Returns:
+            Dict with pending message data if available, None otherwise.
+            The dict contains: author_name, author_display, author_nick,
+            content, formatted_content, image_attachments
+        """
+        # Import here to avoid circular imports
+        from src.discord_bot.bot_core import get_bot_instance
+        bot = get_bot_instance()
+        if bot is None:
+            return None
+        
+        # Check if there are pending messages for this channel
+        pending = bot._pending_messages.get(channel_id)
+        if not pending:
+            return None
+        
+        # Check if session is still active (only process if session exists)
+        if not bot._session_manager.is_active(channel_id):
+            # Session expired, clear pending messages
+            bot._pending_messages.pop(channel_id, None)
+            return None
+        
+        # Get the first pending message (highest priority - oldest)
+        if pending:
+            return pending.pop(0)
+        
+        return None
+    
+    async def check_pending_messages_and_interrupt(self, channel_id: int, message) -> Optional[Dict]:
+        """Check for pending messages and interrupt processing if found.
+        
+        This is a convenience method that checks for pending messages
+        and sends a cancellation message to the channel if one is found.
+        
+        Args:
+            channel_id: Discord channel ID
+            message: Discord message object (for channel reference)
+            
+        Returns:
+            Dict with pending message data if interrupted, None otherwise.
+        """
+        # Check for pending messages
+        pending = await self.check_pending_messages(channel_id)
+        if pending:
+            logger.info(f"Pending message found for channel {channel_id}, interrupting processing")
+            # Send a brief notification that we're switching to the new message
+            try:
+                await message.channel.send("📝 Switching to new message...")
+            except Exception:
+                pass
+            return pending
+        
+        return None
+    
+    async def _send_periodic_status(
+        self,
+        channel,
+        turn: int,
+        total_turns: int,
+        tool_names: List[str],
+        elapsed_seconds: float,
+        channel_id: int = 0
+    ) -> None:
+        """Send a periodic status update during long tool execution.
+        
+        Sends a "still working" message to keep the user engaged
+        when tool execution takes longer than 10 seconds.
+        
+        Args:
+            channel: Discord channel to send the message to
+            turn: Current turn number
+            total_turns: Total max turns
+            tool_names: List of tool names being executed
+            elapsed_seconds: Seconds elapsed since processing started
+            channel_id: Discord channel ID (for status message rotation)
+        """
+        # Only send periodic status if processing has been going for > 10 seconds
+        if elapsed_seconds < 10:
+            return
+        
+        # Avoid spamming - only send if more than 15 seconds since last status
+        # Use a simple heuristic: only send on turns that are multiples of 2
+        # after the first 10 seconds
+        if turn % 2 != 0 and elapsed_seconds < 25:
+            return
+        
+        # Build a friendly "still working" message
+        unique_tools = list(dict.fromkeys(tool_names))
+        tool_display = {
+            "channel_search": "searching channel history",
+            "image_describe": "analyzing an image",
+            "image_compare": "comparing images",
+            "comfyui_generate": "generating an image",
+            "memory_tool": "accessing memory",
+            "math_calc": "calculating",
+            "end_session": "ending the session",
+        }
+        
+        active_tools = []
+        for tool in unique_tools:
+            desc = tool_display.get(tool, tool)
+            active_tools.append(desc)
+        
+        if active_tools:
+            tool_desc = " and ".join(active_tools)
+        else:
+            tool_desc = "processing your request"
+        
+        # Round elapsed time
+        elapsed_rounded = int(elapsed_seconds)
+        
+        status_messages = [
+            f"⏳ Still working on {tool_desc}... ({elapsed_rounded}s)",
+            f"⏳ Working on it... ({elapsed_rounded}s elapsed)",
+            f"🔧 Almost there, still processing ({elapsed_rounded}s)",
+        ]
+        
+        # Simple rotation based on channel_id, turn, and elapsed time
+        import hashlib
+        hash_val = int(hashlib.md5(f"{channel_id}_{turn}_{elapsed_rounded}".encode()).hexdigest(), 16)
+        status_text = status_messages[hash_val % len(status_messages)]
+        
+        try:
+            await channel.send(status_text)
+            logger.info(f"Periodic status [{elapsed_rounded}s]: {status_text}")
+        except Exception as e:
+            logger.warning(f"Failed to send periodic status: {e}")
+    
+    async def _process_tool_calls_with_status(
+        self,
+        tool_calls: List[Dict],
+        messages_for_lm: List[Dict],
+        channel,
+        turn: int,
+        channel_id: int,
+        start_time: float,
+        is_active_session: bool = False
+    ) -> Any:
+        """Process tool calls with periodic status updates and cancellation checking.
+        
+        This wraps the tool call processing with:
+        - Periodic status messages to Discord
+        - Cancellation checks before and after processing
+        
+        Args:
+            tool_calls: Tool call dicts from LM Studio
+            messages_for_lm: Conversation messages
+            channel: Discord channel
+            turn: Current turn number
+            channel_id: Discord channel ID
+            start_time: Processing start time (time.time())
+            is_active_session: Whether this is an active session
+            
+        Returns:
+            For new session: response_text string
+            For active session: end_session_result dict or None
+        """
+        # Check cancellation before processing
+        cancelled = await self._check_cancellation(channel_id)
+        if cancelled:
+            logger.info(f"Cancellation requested before tool processing, channel {channel_id}")
+            await channel.send("⚠️ Operation cancelled.")
+            return None
+        
+        # Extract tool names for status display
+        tool_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
+        
+        # Send initial status message if no custom one was provided
+        custom_status_msg = self._extract_status_message(tool_calls)
+        if not self._should_send_status(custom_status_msg):
+            await self._send_tool_status_message(channel, tool_names, turn, None)
+        
+        # Process tool calls
+        if is_active_session:
+            response_text = await self._tool_call_handler.process_tool_calls_active(
+                tool_calls, messages_for_lm, turn,
+                self._safe_downloader,
+                make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
+                get_bot_instance=lambda: self._bot_instance
+            )
+        else:
+            response_text = await self._tool_call_handler.process_tool_calls(
+                tool_calls, messages_for_lm, channel, turn,
+                self._safe_downloader,
+                make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
+                get_bot_instance=lambda: self._bot_instance
+            )
+        
+        # Send periodic status update if processing took time
+        elapsed = time.time() - start_time
+        await self._send_periodic_status(channel, turn, self._max_tool_turns, tool_names, elapsed)
+        
+        return response_text
+    
+    async def _send_cancelled_response(self, channel: Any) -> None:
+        """Send a cancellation confirmation message to Discord.
+        
+        Args:
+            channel: Discord channel to send the message to
+        """
+        try:
+            await channel.send("⚠️ Operation cancelled. I'm no longer processing that request.")
+        except Exception as e:
+            logger.error(f"Failed to send cancellation message: {e}")

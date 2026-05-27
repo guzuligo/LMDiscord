@@ -18,6 +18,12 @@ window.addEventListener('load', async () => {
     // Initialize log count to 0 so all logs appear on first fetch
     debugState.lastLogCount = 0;
     
+    // Load log level setting
+    await loadLogLevel();
+    
+    // Load module filter setting
+    await loadModuleFilter();
+    
     // Add a test log entry to verify log display is working
     await testLogDisplay();
     
@@ -368,6 +374,46 @@ function onDebugLogLevelFilterChange() {
     fetchDebugLogs();
 }
 
+// ==================== Log Level Settings ====================
+
+async function loadLogLevel() {
+    try {
+        const response = await fetch('/api/settings/log_level');
+        const data = await response.json();
+        if (data.success) {
+            const select = document.getElementById('debugLogLevel');
+            if (select) {
+                select.value = data.log_level;
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load log level:', e);
+    }
+}
+
+async function updateLogLevel(level) {
+    try {
+        const response = await fetch('/api/settings/log_level', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ log_level: level })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            addDiagnosticOutput(`Log level set to: ${level}`, 'success');
+            // Refresh logs to apply new filter
+            debugState.lastLogCount = 0;
+            fetchDebugLogs();
+        } else {
+            addDiagnosticOutput(`Error setting log level: ${data.error}`, 'error');
+        }
+    } catch (e) {
+        addDiagnosticOutput(`Error: ${e.message}`, 'error');
+    }
+}
+
+
 // ==================== Settings Override ====================
 
 async function saveSettingOverride(settingName, value) {
@@ -460,9 +506,77 @@ async function testLogDisplay() {
 
 // ==================== Close Button ====================
 
+// ==================== Module Filter ====================
+
+async function loadModuleFilter() {
+    try {
+        const response = await fetch('/api/settings/module_filter');
+        const data = await response.json();
+        if (data.success) {
+            const textarea = document.getElementById('moduleFilterInput');
+            if (textarea) {
+                textarea.value = data.modules.join(', ');
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load module filter:', e);
+    }
+}
+
+async function saveModuleFilter() {
+    const textarea = document.getElementById('moduleFilterInput');
+    const raw = textarea?.value?.trim() || '';
+    
+    let modules = [];
+    if (raw) {
+        modules = raw.split(',').map(m => m.trim()).filter(m => m.length > 0);
+    }
+    
+    try {
+        const response = await fetch('/api/settings/module_filter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modules })
+        });
+        const data = await response.json();
+        
+        const statusEl = document.getElementById('moduleFilterStatus');
+        if (statusEl) {
+            if (data.success) {
+                statusEl.style.color = '#a6e3a1';
+                statusEl.textContent = `✅ Module filter saved: ${modules.length} module(s) filtered`;
+                setTimeout(() => { statusEl.style.color = '#a6adc8'; }, 3000);
+            } else {
+                statusEl.style.color = '#f38ba8';
+                statusEl.textContent = `❌ Error: ${data.error}`;
+                setTimeout(() => { statusEl.style.color = '#a6adc8'; }, 5000);
+            }
+        }
+    } catch (e) {
+        const statusEl = document.getElementById('moduleFilterStatus');
+        if (statusEl) {
+            statusEl.style.color = '#f38ba8';
+            statusEl.textContent = `❌ Error: ${e.message}`;
+            setTimeout(() => { statusEl.style.color = '#a6adc8'; }, 5000);
+        }
+    }
+}
+
+async function resetModuleFilter() {
+    // Reset to default filtered modules
+    const defaults = ['typing_indicator', 'token_tracker'];
+    const textarea = document.getElementById('moduleFilterInput');
+    if (textarea) {
+        textarea.value = defaults.join(', ');
+    }
+    await saveModuleFilter();
+}
+
 function closeDebugPanel() {
+    // Since debug page is now a full-page tab, just inform the user
+    // They can close the tab manually or navigate back to main page
     window.close();
-    // Fallback if window.close() is blocked
+    // Fallback if window.close() is blocked by browser
     if (!window.closed) {
         document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#cdd6f4;font-family:sans-serif;"><p>Debug panel closed. You may close this tab.</p></div>';
     }

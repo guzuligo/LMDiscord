@@ -216,11 +216,24 @@ _No issues marked as won't fix._
 
 ---
 
-### 🆕 Discord Token Metrics Push to Web UI (Planned)
+### 🆕 FEAT-003: Debug Mode Flag for Logging (Planned)
 
 | Field | Value |
 |-------|-------|
 | **ID** | FEAT-003 |
+| **Date** | 2026-05-27 |
+| **Status** | ⏳ Planned |
+| **Description** | Verbose DEBUG-level logs (discord.py HTTP traces, urllib3 connection details, etc.) appear on every startup even when not debugging. Add `--debug` CLI flag or `DEBUG_MODE` config option to control logging verbosity. |
+| **Requirements** | 1. Add `debug_mode` config option in `config.py` 2. `setup_logging()` in `logger.py` to accept `debug_level` parameter 3. Debug mode: `logging.basicConfig(level=logging.DEBUG)` — full verbose output 4. Normal mode: `logging.basicConfig(level=logging.INFO)` — suppress library DEBUG output |
+| **Files to Modify** | `src/logger.py`, `src/app.py`, `src/config.py` |
+
+---
+
+### 🆕 Discord Token Metrics Push to Web UI (Planned)
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-004 |
 | **Date** | 2026-05-13 |
 | **Status** | ⏳ Planned |
 | **Description** | Push token metrics from Discord bot to web UI's Tokens tab in real-time. Toggle-based sync with polling every 5s. |
@@ -515,9 +528,7 @@ _No open issues._
 | **Description** | After channel_search tool returned results, LM Studio sometimes misinterpreted them and gave incorrect responses. For example, when searching for "Mannequin" in a channel, the bot said "it only found your messages asking to find it" even though the search returned matching messages. |
 | **Root Cause** | The tool result format was too loose and didn't clearly indicate which messages contained the search term. LM Studio couldn't distinguish matching messages from non-matching ones. |
 | **Fix Applied** | 1. **Improved result format** — Added structured `=== Channel Search Results ===` headers with explicit `Search query`, `Total matches`, and `CONTENT:` labels for each message 2. **Added LM instructions** — Appended explicit instructions: "Read the messages above. If the search query was 'X', identify which messages contain this term and provide a direct answer to the user's original question." 3. **Return "" after channel_search** — Changed to return empty string to signal the loop should continue for a final response (prevents bot going silent) |
-| **Files Modified** | `src/discord_bot/tool_executor.py` → `_handle_channel_search()`, `_handle_channel_search_active()` |
-
----
+| **Files Modified** | `src/discord
 
 ### DISCORD-003: UnboundLocalError in get_sessions (sessions variable not initialized)
 
@@ -1109,12 +1120,11 @@ _No open issues._
 |-------|-------|
 | **ID** | PENDING-005 |
 | **Date** | 2026-05-21 |
-| **Status** | 🔄 Open |
-| **Severity** | Medium |
+| **Status** | ✅ Deprioritized (2026-05-27) |
+| **Severity** | Low |
 | **Description** | `tool_executor.py` imports `from src.utils import resize_image_bytes, image_to_base64`. While `src/utils.py` exists in the file listing, this import chain should be verified to ensure image processing doesn't fail at runtime with ImportError. |
-| **Code Location** | `src/discord_bot/tool_executor.py` lines 189, 263, 319 |
-| **Recommended Fix** | Add a startup verification check in `app.py` or add unit tests for the image processing pipeline. |
-| **Files To Verify** | `src/utils.py`, `src/discord_bot/tool_executor.py` |
+| **Resolution** | **Deprioritized** — This is an internal code import check, not an external dependency issue. Since the Flask app is running and processing messages (including image_compare which uses these functions), the imports are verified working. Python catches import errors at module load time, so any broken imports would cause immediate startup failure. The `requirements.txt` file lists external pip packages, not internal module imports — these are unrelated concerns. |
+| **Files Verified** | `src/utils.py`, `src/discord_bot/tool_executor.py` |
 
 ---
 
@@ -1359,3 +1369,173 @@ _No open issues._
 | **Live Test Verification** | ✅ Verified 2026-05-26: User sent "What about this?" with image attachment → LM called `channel_search` with `message_id` → Tool fetched the message and extracted image URL → LM called `image_describe` with the URL → Image described successfully → Full pipeline working. |
 
 ---
+
+### 🆕 FEAT-LOG-001: Verbose Mode Toggle + Log Level Control Panel (Planned)
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-LOG-001 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented, Ready for Implementation |
+| **Severity** | Low |
+| **Description** | Add a toggle to enable/disable verbose logging mode and a log level control panel in the web UI. Currently, the logger supports `LogLevel` levels (DEBUG, INFO, WARNING, ERROR, CRITICAL) and `_current_log_level_filter` in `app.py`, but there's no UI control to change it dynamically. The verbose mode should be disabled by default once the feature is fully tested, but the infrastructure should remain ready for later use. |
+| **Current State** | 1. `logger.py` has full `LogLevel` enum with CSS colors and icons. 2. `app.py` has `_current_log_level_filter = LogLevel.DEBUG` and `set_log_level` API endpoint. 3. `get_logs()` supports `level_filter` parameter. 4. Web UI has a "Logs" tab but no log level selector. |
+| **Proposed Implementation** | **1. Add `verbose_mode` toggle** to config (default `false` after testing). When `false`, only WARNING+ logs are shown. When `true`, DEBUG+ logs are shown. **2. Add log level selector** to web UI (dropdown: DEBUG, INFO, WARNING, ERROR, CRITICAL). **3. Wire the selector** to the existing `set_log_level` API endpoint. **4. Keep verbose mode disabled by default** — the feature should be "ready for later" with the toggle in the UI. |
+| **Config Schema** | ```json
+{
+  "logging": {
+    "verbose_mode": false,
+    "default_level": "WARNING"
+  }
+}
+``` |
+| **Files To Modify** | `src/config.py` (add logging config), `src/app.py` (wire verbose_mode to log level), `src/templates/index.html` (add log level dropdown), `src/static/script.js` (wire dropdown to API) |
+| **Design Decisions** | 1. **Default to non-verbose**: After full testing, verbose mode should be OFF by default. 2. **Toggle persists**: Verbose mode setting should be saved in config and survive restarts. 3. **Log level dropdown**: Simple select element with 5 options matching LogLevel enum. 4. **Backward compatible**: If no config exists, default to WARNING level (quiet mode). |
+
+---
+
+### 🆕 FEAT-008: Context Management System — Channel Search, Session Start Context, Context Compression
+
+---
+
+### 🆕 BUG-013: channel_search Tool Call Loop — Model Re-calls Instead of Using Results
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-013 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | High |
+| **Description** | When the LM Studio model calls `channel_search` tool, it re-calls the tool up to 3 times (max_tool_calls) without using the returned results. After the 3rd call, it returns `content='\n\n'` (empty response). The model fails to process the search results and respond to the user's original question. |
+| **Log Evidence** | ```Turn 1: content='', tool_calls=1 → 🔧 Turn 1: LM Studio called tool: channel_search ... Turn 2: content='', tool_calls=1 → 🔧 Turn 2: LM Studio called tool: channel_search ... Turn 3: content='', tool_calls=1 → 🔧 Turn 3: LM Studio called tool: channel_search ... Turn 4: content='\n\n', tool_calls=0 → ❌ Empty response after max tool calls (3)``` |
+| **Root Cause** | 1. The tool result from `channel_search` is appended to the conversation history 2. LM Studio does not recognize the results as sufficient to answer the user's question 3. The model re-calls `channel_search` thinking it needs more data 4. After hitting max_tool_calls (3), the model returns empty content |
+| **Related Issues** | CHANNEL-001 (result format improvement), ISS-006 (same pattern with show_typing tool), BUG-010 (existing - different issue), BUG-011 (existing - different issue) |
+| **Proposed Fix** | 1. Add explicit instruction in tool result: "You now have the search results. Respond to the user's question using this data." 2. After max_tool_calls is reached, force the model to respond with the gathered data by injecting a system message 3. Consider reducing max_tool_calls for channel_search specifically |
+| **Files To Modify** | `src/discord_bot/message_processor.py` (max tool call handling), `src/discord_bot/tool_executor.py` (tool result format), `src/discord_bot/message_handler.py` (system prompt) |
+
+---
+
+### 🆕 BUG-014: channel_search Only Checks Attachments, Not Embeds (Missing Image Embeds)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-014 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | Medium |
+| **Description** | The `channel_search` tool only checks `message.attachments` for images, but Discord messages can also contain images via `message.embeds`. Messages with image embeds (e.g., links that Discord auto-embeds as image previews) are incorrectly reported as `has_image=False`. |
+| **Log Evidence** | Message `1509036589081432225` has 5 image embeds in `message.embeds` array but `has_image=False` in channel_search results. |
+| **Root Cause** | In `channel_search.py`, the `_has_image()` function only checks `message.attachments`: ```python def _has_image(message): return any(f.filename.lower().endswith(('.png', '.jpg', ...)) for f in message.attachments) ``` It does not check `message.embeds` for image embeds. |
+| **Discord.py Embed Structure** | Embeds with images have: `embed.type == 'image'` or `embed.thumbnail and embed.thumbnail.url`. The embed array can contain multiple images. |
+| **Proposed Fix** | Update `_has_image()` to also check embeds: ```python def _has_image(message): # Check attachments ... # Check embeds for embed in (message.embeds or []): if embed.type == 'image' or (embed.thumbnail and embed.thumbnail.url): return True return False ``` |
+| **Files To Modify** | `src/tools/builtins/channel_search.py` → `_has_image()` function |
+
+---
+
+### 🆕 BUG-015: channel_search Rate Limit Exhaustion (Too Many API Calls Per Search)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-015 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | Medium |
+| **Description** | Each `channel_search` call makes 16+ Discord API calls: 1 batch fetch (50 messages) + up to 15 individual message fetches for full content. When the model re-calls `channel_search` 3 times (BUG-013), this results in 48+ API calls, accelerating rate limit bucket exhaustion. |
+| **Log Evidence** | Rate limit warnings appear after multiple channel_search calls: ```WARNING - Rate limit bucket exhausted: 429 Too Many Request``` |
+| **Root Cause** | 1. Each channel_search fetches message bodies individually via `channel.fetch_message()` 2. The model re-calls channel_search instead of using results (BUG-013) 3. No caching of channel_search results to prevent redundant calls |
+| **Proposed Fix** | 1. Fix BUG-013 (tool call loop) to prevent redundant calls 2. Add result caching for channel_search with TTL 3. Consider batching message fetches where possible |
+| **Files To Modify** | `src/tools/builtins/channel_search.py`, `src/discord_bot/message_processor.py` |
+
+---
+
+### 🆕 BUG-CANCEL-001: Cancellation Feature Not Fully Implemented — Method Name Mismatch
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-001 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | High |
+| **Description** | The cancellation feature has been partially implemented but contains a critical bug: `bot_core.py` calls `manager.cancel(channel_id)` but `CancellationManager` only has a `request_cancel()` method. This will cause an `AttributeError` when attempting to cancel a session. |
+| **Root Cause** | Method name mismatch between `bot_core.py` (which calls `cancel()`) and `CancellationManager` (which defines `request_cancel()`). The `cancel()` method does not exist on `CancellationManager`. |
+| **Code Evidence** | `bot_core.py` line 884: `await manager.cancel(channel_id)` — but `CancellationManager` only defines `async request_cancel(self, channel_id: int)` at line ~55. |
+| **Fix Required** | Change `manager.cancel(channel_id)` to `await manager.request_cancel(channel_id)` in `bot_core.py` `cancel_session()` method. |
+| **Files To Modify** | `src/discord_bot/bot_core.py` → `cancel_session()` method |
+
+---
+
+### 🆕 BUG-CANCEL-002: Cancellation Not Checked During Tool Execution Loop
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-002 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | High |
+| **Description** | The `message_processor.py` has a `_process_tool_calls_with_status()` method (lines 919-983) that includes cancellation checking at each tool call turn. However, this method is NEVER called — the code directly calls `self._tool_call_handler.process_tool_calls()` instead. This means cancellation is never actually checked during the tool execution loop. |
+| **Root Cause** | The `_process_tool_calls_with_status()` method exists but is not wired into the processing pipeline. The main tool execution path uses `self._tool_call_handler.process_tool_calls()` directly without cancellation checks. |
+| **Code Evidence** | `message_processor.py` line ~850: `response = await self._tool_call_handler.process_tool_calls(...)` — no use of `_process_tool_calls_with_status()`. |
+| **Fix Required** | Replace `self._tool_call_handler.process_tool_calls()` call with `self._process_tool_calls_with_status()` to enable cancellation checking during tool execution. |
+| **Files To Modify** | `src/discord_bot/message_processor.py` → main tool execution path |
+
+---
+
+### 🆕 BUG-CANCEL-003: No Cancellation Integration in MessageHandler
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-003 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | Medium |
+| **Description** | The `message_handler.py` module has no imports or usage of the cancellation module. Neither `handle_new_session()` nor `handle_active_session_batch()` check for cancellation requests during processing. This means even if cancellation is triggered from `bot_core.py`, it won't be checked during message handling. |
+| **Root Cause** | `message_handler.py` does not import `get_cancellation_manager()` and does not call `_check_cancellation()` anywhere. |
+| **Fix Required** | 1. Add `from src.discord_bot.cancellation import get_cancellation_manager` import. 2. Add cancellation checks in `handle_new_session()` and `handle_active_session_batch()` before and during LM Studio API calls. |
+| **Files To Modify** | `src/discord_bot/message_handler.py` |
+
+---
+
+### 🆕 BUG-CANCEL-004: No Discord Command Trigger for Cancellation
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-004 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | Medium |
+| **Description** | There is no Discord command (e.g., `/cancel` or `!stop`) that users can send to trigger session cancellation. The `cancel_session()` and `cancel_all_sessions()` methods exist in `bot_core.py` but are never called from any Discord message handler. |
+| **Root Cause** | The `on_message` handler in `bot_core.py` does not check for cancellation commands before processing messages. |
+| **Fix Required** | Add a command check in `_handle_on_message()` to detect `/cancel` or `!stop` commands and call `self.cancel_session(channel_id)`. |
+| **Files To Modify** | `src/discord_bot/bot_core.py` → `_handle_on_message()` method |
+
+---
+
+### 🆕 BUG-CANCEL-005: Cancellation Manager Not Imported in bot_core.py
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-005 |
+| **Date** | 2026-05-27 |
+| **Status** | 📋 Documented |
+| **Severity** | Medium |
+| **Description** | `bot_core.py` calls `get_cancellation_manager()` in `cancel_session()` (line 876) and `cancellation_manager` property (line 916), but does not import it. This will cause a `NameError` when these methods are called. |
+| **Root Cause** | Missing import statement for `get_cancellation_manager` from `src.discord_bot.cancellation`. |
+| **Fix Required** | Add `from src.discord_bot.cancellation import get_cancellation_manager` at the top of `bot_core.py`. |
+| **Files To Modify** | `src/discord_bot/bot_core.py` → imports section |
+
+---
+
+### ✅ BUG-LOG-001: Terminal Log File Gets Deleted/Cleared During Application Runtime — Solved
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-LOG-001 |
+| **Date** | 2026-05-27 |
+| **Date Solved** | 2026-05-27 |
+| **Status** | ✅ Solved |
+| **Severity** | Medium |
+| **Description** | The terminal log file (`POC/test1/terminal.log`) was being truncated during application runtime instead of only at startup. When Flask's debug reloader restarted the process, `setup_logging()` was called at module level, which triggered `enable_terminal_log()` and truncated the log file. |
+| **Root Cause** | `setup_logging()` was called at module level in `app.py` (line 69), which runs every time the Flask debug reloader spawns a new process. This caused `enable_terminal_log()` to truncate `terminal.log` on every reloader restart. |
+| **Fix Applied** | **1. `logger.py`**: Removed the incorrect `max_age_minutes` parameter from `_TeeStream.__init__()` that was previously added. **2. `app.py`**: Moved `setup_logging()` call from module level into the `if __name__ == "__main__":` block. This ensures `setup_logging()` is only called when the app is actually started by the user, not when the reloader spawns a child process. |
+| **Files Modified** | `src/logger.py` (removed `max_age_minutes` parameter from `_TeeStream.__init__()`), `src/app.py` (moved `setup_logging()` into `if __name__ == "__main__"` block) |
+

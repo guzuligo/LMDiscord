@@ -178,8 +178,14 @@ class LMStudioClient:
             json=payload,
             timeout=120
         )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            # Log the error response body for debugging
+            import logging
+            logging.error(f"LM Studio HTTP Error: {e}. Response: {response.text[:2000]}")
+            raise
     
     def chat_with_tools(
         self,
@@ -223,8 +229,14 @@ class LMStudioClient:
             json=payload,
             timeout=120
         )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            # Log the error response body for debugging
+            import logging
+            logging.error(f"LM Studio HTTP Error: {e}. Response: {response.text[:2000]}")
+            raise
     
     def chat_stream(
         self,

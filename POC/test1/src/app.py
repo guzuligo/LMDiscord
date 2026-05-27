@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import Config
 from src.lm_studio_client import LMStudioClient
-from src.logger import logger, LogLevel
+from src.logger import logger, LogLevel, setup_logging
 from src.chat_api import register_chat_blueprints
 from src.lm_models.api import init_instance_manager, register_lm_blueprints
 # Import the discord_api module to access its attributes dynamically.
@@ -61,6 +61,11 @@ force_reset_discord_state()
 # Log level tracking for WebSocket-like polling
 _current_log_level_filter = LogLevel.DEBUG
 
+# ====================================================================
+# Logging Setup
+# ====================================================================
+# NOTE: setup_logging() is called inside the if __name__ == "__main__" block below
+# to prevent terminal.log from being truncated when Flask's debug reloader restarts.
 
 # ==================== Main Route ====================
 
@@ -426,6 +431,96 @@ def set_max_response_length():
     })
 
 
+# ==================== Log Level Settings ====================
+
+@app.route("/api/settings/log_level", methods=["GET"])
+def get_log_level():
+    """Get the current log level setting."""
+    return jsonify({
+        "success": True,
+        "log_level": _current_log_level_filter.name
+    })
+
+
+@app.route("/api/settings/log_level", methods=["POST"])
+def set_log_level():
+    """Update the log level setting."""
+    data = request.get_json()
+    level = data.get("log_level", "").upper()
+    
+    valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    if level not in valid_levels:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid log level. Must be one of: {valid_levels}"
+        }), 400
+    
+    try:
+        global _current_log_level_filter
+        _current_log_level_filter = LogLevel[level]
+        config.log_level = level
+        config.save()
+        
+        logger.info(f"Log level set to: {level}", module="app")
+        
+        return jsonify({
+            "success": True,
+            "log_level": _current_log_level_filter.name
+        })
+    except Exception as e:
+        logger.error(f"Error setting log level: {e}", module="app", exc=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ==================== Module Filter Settings ====================
+
+@app.route("/api/settings/module_filter", methods=["GET"])
+def get_module_filter():
+    """Get the current module filter configuration."""
+    from src.logger import DEFAULT_MODULE_FILTER
+    return jsonify({
+        "success": True,
+        "modules": DEFAULT_MODULE_FILTER
+    })
+
+
+@app.route("/api/settings/module_filter", methods=["POST"])
+def set_module_filter():
+    """Update the module filter configuration."""
+    data = request.get_json()
+    modules = data.get("modules", [])
+    
+    if not isinstance(modules, list):
+        return jsonify({
+            "success": False,
+            "error": "modules must be a list of module name strings"
+        }), 400
+    
+    # Validate module names (alphanumeric, underscores, dots, hyphens only)
+    import re
+    for mod in modules:
+        if not isinstance(mod, str) or not re.match(r'^[a-zA-Z0-9_.\-]+$', mod):
+            return jsonify({
+                "success": False,
+                "error": f"Invalid module name: {mod}"
+            }), 400
+    
+    # Update the logger's module filter
+    from src.logger import DEFAULT_MODULE_FILTER
+    DEFAULT_MODULE_FILTER.clear()
+    DEFAULT_MODULE_FILTER.update(modules)
+    
+    logger.info(f"Module filter updated: {modules}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "modules": list(DEFAULT_MODULE_FILTER)
+    })
+
+
 # ==================== Debug Panel Route ====================
 
 @app.route("/debug")
@@ -744,4 +839,8 @@ app.register_blueprint(lm_bp)
 
 
 if __name__ == "__main__":
+    # Set up logging: enables terminal.log stdout redirection, Python logging bridge,
+    # and in-memory buffer for web UI log display.
+    # Must be inside this block to avoid truncation on Flask debug reloader restart.
+    setup_logging()
     app.run(host="0.0.0.0", port=5000, debug=True)

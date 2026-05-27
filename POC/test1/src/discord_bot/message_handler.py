@@ -236,7 +236,13 @@ class MessageHandler:
             "IMPORTANT: After calling image_describe, you will receive the description in the tool result. DO NOT call image_describe again for the same image. Use the description to respond.\n"
             "IMPORTANT: For channel_search, you can use '#ID' for channel ID, '@name' for channel name, 'this' for current channel, or leave empty to search all channels. You do NOT need to ask the user for channel IDs.\n"
             "IMPORTANT: When channel_search results show 'IMAGES:' with Discord CDN URLs, you can call the 'image_describe' tool with those URLs to get a description of the image. Pass the URL directly to image_describe.\n"
-            "IMPORTANT: When calling any tool, ALWAYS include a 'tell_user_you_are_working' argument with a short, in-character status message so the user knows you are working. Make it sound natural and match your personality (e.g., 'Let me check that for you...', 'Looking through recent messages...', 'Analyzing that image now...'). This message will be posted to Discord immediately while the tool runs.\n"
+            "IMPORTANT: When calling any tool, ALWAYS include a 'tell_user_you_are_working' argument with a short, in-character status message so the user knows you are working. Make it sound natural and match your personality (e.g., 'Let me check that for you...', 'Looking through recent messages...', 'Analyzing that image now...'). This message will be posted to Discord immediately while the tool runs.\n\n"
+            "WORKFLOW BEST PRACTICES:\n"
+            "1. GATHER CONTEXT FIRST: Before responding, always call channel_search to check recent messages for context. This helps you understand ongoing conversations and avoid repeating information.\n"
+            "2. USE TOOLS EFFICIENTLY: When you have enough information, respond immediately. Do not call tools unnecessarily.\n"
+            "3. AVOID REDUNDANT CALLS: Do not call the same tool multiple times with the same arguments. If you already have the information, use it.\n"
+            "4. SEARCH QUERY REQUIREMENT: When using channel_search with a search_query, the query must be at least 2 characters long. Shorter queries will be rejected.\n"
+            "5. UNFILTERED QUERIES: When searching without filters (no search_query, no username), only the 5 most recent messages are returned for efficiency.\n"
         )
         
         # REASONING-FIX: Add reasoning brevity instruction if enabled
@@ -248,6 +254,7 @@ class MessageHandler:
                 "3. Do NOT output extended internal reasoning or chain-of-thought.\n"
                 "4. Keep all responses concise — especially tool call arguments and final answers.\n"
                 "5. When you have the answer, respond immediately without extra reasoning steps.\n"
+                "6. You have up to 5 tool call attempts per message. Use them wisely — gather context first, then respond.\n"
             )
 
         # Include reply context so the LM knows what message is being replied to
@@ -274,8 +281,8 @@ class MessageHandler:
         full_content = UserIdentity.format_new_session(content, author_name, author_nick, author_display)
         conversation_history[channel_id].append({"role": "user", "content": full_content})
 
-        # Process with LM Studio
-        await self._processor.process_message(
+        # Process with LM Studio and capture result
+        result = await self._processor.process_message(
             message=message,
             channel_id=channel_id,
             conversation_history=conversation_history,
@@ -284,6 +291,8 @@ class MessageHandler:
             on_message_callback=on_message_callback,
             call_lm_studio_func=self._call_lm_studio_via_processor
         )
+        
+        return result
 
     # --- Active Session Message Handling ---
 
@@ -347,7 +356,7 @@ class MessageHandler:
             logger.info(f"[{author_display}] in active session: {content[:50]}...")
 
         # Process via processor
-        return await self._processor.process_active_session(
+        result = await self._processor.process_active_session(
             message=message,
             channel_id=channel_id,
             messages_for_lm=messages_for_lm,
@@ -359,6 +368,21 @@ class MessageHandler:
             on_message_callback=on_message_callback,
             call_lm_studio_func=self._call_lm_studio_via_processor
         )
+
+        # Check if processing was interrupted by a pending message
+        if result and result.get("interrupted", False):
+            pending_msg = result.get("pending_message")
+            if pending_msg:
+                logger.info(f"Processing interrupted by pending message: {pending_msg.get('author_display', 'unknown')}")
+                # Return a special result to signal the caller to process the pending message
+                return {
+                    "usage": None,
+                    "should_end_session": False,
+                    "interrupted": True,
+                    "pending_message": pending_msg
+                }
+
+        return result
 
     # --- LM Studio Call Wrapper ---
 

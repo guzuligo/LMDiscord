@@ -374,39 +374,38 @@ async function sendStreamingMessage() {
 // ==================== Tab Functions ====================
 
 function switchTab(tabName) {
+    // Remove active class from all tabs
     document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     
+    // Find the button that calls switchTab with this tabName and add active class
     const buttons = document.querySelectorAll('.tab-button');
-    if (tabName === 'chat') {
-        buttons[0]?.classList.add('active');
-        document.getElementById('chat-tab')?.classList.add('active');
-    } else if (tabName === 'tokens') {
-        buttons[1]?.classList.add('active');
-        document.getElementById('tokens-tab')?.classList.add('active');
+    for (const btn of buttons) {
+        const onclick = btn.getAttribute('onclick');
+        if (onclick && onclick.includes(`switchTab('${tabName}')`)) {
+            btn.classList.add('active');
+            break;
+        }
+    }
+    
+    // Show the corresponding tab content
+    const tabContent = document.getElementById(`${tabName}-tab`);
+    if (tabContent) {
+        tabContent.classList.add('active');
+    }
+    
+    // Load tab-specific data
+    if (tabName === 'tokens') {
         loadLastTokenUsage();
     } else if (tabName === 'servers') {
-        buttons[2]?.classList.add('active');
-        document.getElementById('servers-tab')?.classList.add('active');
         loadServerConfig();
     } else if (tabName === 'lm-instances') {
-        const idx = buttons.length - 3; // third to last (before tools-config and logs)
-        buttons[idx]?.classList.add('active');
-        document.getElementById('lm-instances-content')?.classList.add('active');
         loadLmInstances();
     } else if (tabName === 'tools-config') {
-        const idx = buttons.length - 2; // second to last (before logs)
-        buttons[idx]?.classList.add('active');
-        document.getElementById('tools-config-tab')?.classList.add('active');
         loadToolsConfig();
     } else if (tabName === 'memory-db') {
-        // memory-db is at index 5 (chat=0, tokens=1, servers=2, lm-instances=3, tools-config=4, memory-db=5, logs=last)
-        buttons[5]?.classList.add('active');
-        document.getElementById('memory-db-tab')?.classList.add('active');
         loadMemoryDbPath();
     } else if (tabName === 'logs') {
-        buttons[buttons.length - 1]?.classList.add('active');
-        document.getElementById('logs-tab')?.classList.add('active');
         refreshLogs();
     }
 }
@@ -456,7 +455,8 @@ function updateModelSelect(models, hostname, port) {
 // ==================== Debug Panel ====================
 
 function openDebugPanel() {
-    window.open('/debug', '_blank', 'width=1200,height=800');
+    // Open debug page as a full-page tab (not popup)
+    window.open('/debug', '_blank');
 }
 
 // ==================== Initialization ====================

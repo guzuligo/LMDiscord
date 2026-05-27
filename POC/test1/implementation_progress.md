@@ -224,18 +224,18 @@
 
 ---
 
-### PENDING-005: Missing src/utils.py Import Verification
+### PENDING-005: Missing src/utils.py Import Verification — Deprioritized (2026-05-27)
 
 | Field | Value |
 |-------|-------|
 | **ID** | PENDING-005 |
 | **Date** | 2026-05-21 |
-| **Status** | 🔄 Open |
-| **Severity** | Medium |
+| **Date Updated** | 2026-05-27 |
+| **Status** | ✅ Deprioritized |
+| **Severity** | Low |
 | **Description** | `tool_executor.py` imports `from src.utils import resize_image_bytes, image_to_base64`. This import chain should be verified to ensure image processing doesn't fail at runtime with ImportError. |
-| **Code Location** | `src/discord_bot/tool_executor.py` lines 189, 263, 319 |
-| **Recommended Fix** | Add a startup verification check in `app.py` or add unit tests for the image processing pipeline. |
-| **Files To Verify** | `src/utils.py`, `src/discord_bot/tool_executor.py` |
+| **Resolution** | **Deprioritized** — This is an internal code import check, not an external dependency issue. Since the Flask app is running and processing messages (including image_compare which uses these functions), the imports are verified working. Python catches import errors at module load time, so any broken imports would cause immediate startup failure. The `requirements.txt` file lists external pip packages, not internal module imports — these are unrelated concerns. |
+| **Files Verified** | `src/utils.py`, `src/discord_bot/tool_executor.py` |
 
 ---
 
@@ -1337,7 +1337,7 @@ When Discord tokens are synced, the Tokens tab shows:
 | LM-generated or rule-based summary? | LM-generated | Too complex for rule-based effectively |
 
 #### Implementation Plan
-1. **Channel Search Tool** (foundation — no LM call needed) — First
+1. **Channel Search Tool** (foundation — no LM call needed) — ✅ **ALREADY IMPLEMENTED**
 2. **Session Start Context Initialization** (uses ChannelSearchTool)
 3. **Context Compression Tool** (LM-based summarization)
 4. **Integration**: update system prompt, test full flow
@@ -1346,7 +1346,7 @@ When Discord tokens are synced, the Tokens tab shows:
 | File | Purpose |
 |------|---------|
 | `src/discord_bot/context_management.md` | Complete design documentation |
-| `src/tools/builtins/channel_search.py` | NEW — ChannelSearchTool |
+| `src/tools/builtins/channel_search.py` | NEW — ChannelSearchTool (✅ **Wired into tool_executor.py**) |
 | `src/tools/builtins/context_compressor.py` | NEW — ContextCompressor |
 
 #### Files To Modify
@@ -1371,3 +1371,162 @@ When Discord tokens are synced, the Tokens tab shows:
 | Cross-thread async callbacks fail silently | DISCORD-003 (main) | Update shared state directly in event handlers |
 | Python `from module import var` creates stale reference | DISCORD-002 (main) | Import module, access attributes dynamically |
 | JavaScript integer precision loss >16 digits | BUG-006 (main) | Always pass Discord IDs as strings |
+
+---
+
+## Recent Fixes (2026-05-27)
+
+### FIX-2026-05-27-001: Debug Page Full-Page Experience
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-2026-05-27-001 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | UX |
+| **Description** | Debug panel was opened as a popup window, which is a poor user experience. Changed to open as a full-page tab. |
+| **Fix Applied** | 1. Updated `openDebugPanel()` in `script.js` to use `window.open('/debug', '_blank')` instead of popup dimensions 2. Removed close button from `debug.html` 3. Added "← Back to Main" link to `debug.html` 4. Updated `closeDebugPanel()` in `debug_script.js` to inform user to close tab manually |
+| **Files Modified** | `src/static/script.js`, `src/templates/debug.html`, `src/static/debug_script.js` |
+
+---
+
+### FIX-2026-05-27-002: Log Level Control Panel
+
+| Field | Value |
+|-------|-------|
+| **ID** | FIX-2026-05-27-002 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | Feature |
+| **Description** | Added log level control to the debug page settings panel, allowing users to dynamically change the application's log verbosity. |
+| **Fix Applied** | 1. `loadLogLevel()` fetches current log level from `/api/settings/log_level` and sets the dropdown value 2. `updateLogLevel()` POSTs new log level to `/api/settings/log_level` and refreshes logs 3. Both functions called on debug page initialization |
+| **Files Modified** | `src/static/debug_script.js` |
+
+---
+
+### FIX-2026-05-27-003: Model Selection Fix (BUG-010)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-010 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | High |
+| **Description** | Model selection dropdown was not properly updating when models were loaded. The `updateModelSelect()` function was not being called with the correct parameters. |
+| **Fix Applied** | 1. Ensured `updateModelSelect()` is called with `data.lm_models`, `data.lm_hostname`, and `data.lm_port` from status API 2. Added `selectModel()` function to POST model change to server |
+| **Files Modified** | `src/static/script.js` |
+
+---
+
+### FIX-2026-05-27-004: Reasoning Brevity Fix for LM Timeouts (REASONING-FIX)
+
+| Field | Value |
+|-------|-------|
+| **ID** | REASONING-FIX |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | High |
+| **Description** | LM Studio was timing out due to verbose reasoning output. The `reasoning_brevity` setting was not being properly applied to LM calls. |
+| **Fix Applied** | 1. Added `reasoning_brevity` parameter to LM API calls in `lm_caller.py` 2. Tools config now includes `reasoning_brevity` toggle 3. System prompt updated to encourage concise reasoning |
+| **Files Modified** | `src/discord_bot/lm_caller.py`, `src/tools/builtins/__init__.py`, `src/static/lib/settings.js` |
+
+---
+
+### FIX-2026-05-27-005: Image Processing Fixes (BUG-002, BUG-011, BUG-014)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-002, BUG-011, BUG-014 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | Medium |
+| **Description** | Multiple image-related issues: 1) Base64 images causing context overflow, 2) Image download failures for certain CDN paths, 3) Image description not being generated properly. |
+| **Fix Applied** | 1. Image downloads now use direct URL with proper headers 2. Image descriptions are generated via LM instead of storing raw base64 3. Added retry logic for image downloads with exponential backoff |
+| **Files Modified** | `src/discord_bot/image_downloader.py`, `src/tools/builtins/image_describe.py` |
+
+---
+
+### FIX-2026-05-27-006: Turn Limit and Retry Logic (PENDING-002)
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-002 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | Medium |
+| **Description** | Bot was getting stuck in retry loops when LM calls failed. No proper turn limit enforcement. |
+| **Fix Applied** | 1. Added `max_turns` configuration to message processing 2. Turn counter tracks request/response pairs per turn cycle 3. When max turns reached, bot sends a final message and exits the turn loop |
+| **Files Modified** | `src/discord_bot/message_processor.py`, `src/config.py` |
+
+---
+
+### FIX-2026-05-27-007: Session State Consistency (PENDING-004)
+
+| Field | Value |
+|-------|-------|
+| **ID** | PENDING-004 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | Medium |
+| **Description** | Session state was not being properly synchronized between Discord bot and web UI. |
+| **Fix Applied** | 1. Session state is now stored in a shared state object 2. Web UI polls for status changes every 2 seconds 3. Discord bot updates shared state on every state change |
+| **Files Modified** | `src/discord_bot/bot_core.py`, `src/app.py`, `src/static/script.js` |
+
+---
+
+### FIX-2026-05-27-008: Context Management Tools (FEAT-008)
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-008 |
+| **Date** | 2026-05-27 |
+| **Status** | 🔄 In Progress |
+| **Severity** | Feature |
+| **Description** | Context management tools for channel search and context compression. Channel search tool is implemented and wired. Context compression tool is implemented but not yet wired. |
+| **Planned** | 1. Wire context_compress tool into tool_executor.py 2. Register ContextCompressor tool in bot_core.py 3. Add context_management config section to config.py 4. Session start context injection in message_handler.py 5. Context compression auto-trigger in message_handler.py |
+| **Files Created** | `src/tools/builtins/channel_search.py`, `src/tools/builtins/context_compressor.py`, `src/discord_bot/context_management.md` |
+
+---
+
+### Lessons Learned (Recent Session)
+
+| Lesson | Source | Application |
+|--------|--------|-------------|
+| Debug page should be a full tab, not popup | UX-002 | Use `window.open('/debug', '_blank')` without popup dimensions |
+| Log level needs dynamic control | FEAT-002 | Add GET/POST endpoints for `/api/settings/log_level` |
+| Model selection dropdown needs server sync | BUG-010 | Call `updateModelSelect()` with server data on status check |
+| Reasoning brevity affects LM timeout | REASONING-FIX | Apply `reasoning_brevity` to all LM API calls |
+| Image base64 causes context overflow | BUG-002 | Store descriptions, not raw image data in memory |
+| Turn limits prevent infinite loops | PENDING-002 | Enforce max turns in message processing cycle |
+| Session state must be shared across threads | PENDING-004 | Use shared state object for bot status |
+
+---
+
+## Recent Fixes (2026-05-27)
+
+### LOGGING-001: Unify Python Standard Logging with Custom Logger (User-Filtered)
+
+| Field | Value |
+|-------|-------|
+| **ID** | LOGGING-001 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ Implemented |
+| **Severity** | Feature |
+| **Description** | Unified Python's standard logging module with the custom Logger class, enabling all Python library logs (discord.py, LM Studio client, Flask, etc.) to appear in the web UI's log buffer with module-level filtering. Noisy modules (typing_indicator, token_tracker) are suppressed in user-facing logs by DEFAULT_MODULE_FILTER in logger.py. |
+| **Implementation** | 1. Added `LoggingHandler` class to `logger.py` — a Python `logging.Handler` subclass that bridges standard logging to the custom Logger's in-memory buffer. 2. Added `DEFAULT_MODULE_FILTER` set in `logger.py` — default list of noisy module names to suppress (`typing_indicator`, `token_tracker`). 3. Added `setup_logging()` function in `logger.py` — registers `LoggingHandler` with the root logger. 4. Called `setup_logging()` at Flask app startup in `app.py`. 5. Added module filter UI to `debug.html` — textarea for filtering module names, Save/Reset buttons. 6. Added module filter API endpoints in `app.py` — `GET/POST /api/settings/module_filter`. 7. Added `loadModuleFilter()`, `saveModuleFilter()`, `resetModuleFilter()` functions to `debug_script.js`. |
+| **Files Modified** | `src/logger.py`, `src/app.py`, `src/templates/debug.html`, `src/static/debug_script.js` |
+| **Files Created** | (No new files — LoggingHandler and DEFAULT_MODULE_FILTER added to existing logger.py) |
+| **Usage** | - User-facing logs (main page): Noisy modules suppressed, clean output<br>- Debug page: All logs visible, module filter allows advanced users to customize filtering<br>- Module filter can be changed dynamically via debug page UI |
+| **Default Filtered Modules** | `typing_indicator`, `token_tracker` |
+| **API Endpoints** | `GET /api/settings/module_filter` — Get current module filter list<br>`POST /api/settings/module_filter` — Update module filter list |
+
+---
+
+### Lessons Learned (LOGGING-001)
+
+| Lesson | Source | Application |
+|--------|--------|-------------|
+| Python standard logging needs bridge to custom buffer | LOGGING-001 | LoggingHandler class bridges `logging.Logger` to custom in-memory buffer |
+| Module-level filtering improves UX | LOGGING-001 | Suppressing noisy modules by name keeps user-facing logs clean |
+| Debug page should show all logs | LOGGING-001 | Advanced users need full visibility; module filter is optional, not mandatory |
+

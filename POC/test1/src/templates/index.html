@@ -39,29 +39,6 @@
                 <span id="lmStatusText">Disconnected</span>
             </div>
         </div>
-    </div>
-
-    <!-- Model info -->
-    <div class="model-info" id="modelInfo">
-        <span id="modelInfoText">Model: Not connected | Discord Bot: Not connected</span>
-        <select id="modelSelect" style="display:none; margin-left:10px; padding:2px 6px; background:#313244; color:#cdd6f4; border:1px solid #45475a; border-radius:4px; font-size:12px;" onchange="selectModel(this.value)">
-            <option value="">Select model...</option>
-        </select>
-    </div>
-
-    <!-- Tab container -->
-    <div class="tab-container">
-        <!-- Tab buttons -->
-        <div class="tab-buttons">
-            <button class="tab-button active" onclick="switchTab('chat')">💬 Chat</button>
-            <button class="tab-button" onclick="switchTab('tokens')">📊 Tokens</button>
-            <button class="tab-button" onclick="switchTab('servers')">🔧 Servers</button>
-             <button class="tab-button" id="lm-instances-btn" onclick="switchTab('lm-instances')">🧠 LM Instances</button>
-             <button class="tab-button" onclick="switchTab('tools-config')">⚙️ Tools Config</button>
-             <button class="tab-button" onclick="switchTab('memory-db')">🧠 Memory DB</button>
-             <button class="tab-button" onclick="switchTab('logs')">📋 Logs <span id="logBadge" style="display:none; background:#f38ba8; color:#1e1e2e; padding:0 4px; border-radius:8px; font-size:10px; margin-left:4px;">0</span></button>
-        </div>
-        
         <!-- Debug Panel Button -->
         <div style="text-align: center; margin-top: 10px;">
             <button class="btn btn-secondary" onclick="openDebugPanel()" style="padding: 6px 16px; font-size: 12px;">🔧 Debug Panel</button>
@@ -113,6 +90,28 @@
                 <button class="btn btn-secondary btn-small" onclick="resetSystemPrompt()">🔄 Reset to Default</button>
                 <span id="systemPromptStatusText" class="system-prompt-status">Loading...</span>
             </div>
+        </div>
+    </div>
+
+    <!-- Model info -->
+    <div class="model-info" id="modelInfo">
+        <span id="modelInfoText">Model: Not connected | Discord Bot: Not connected</span>
+        <select id="modelSelect" style="display:none; margin-left:10px; padding:2px 6px; background:#313244; color:#cdd6f4; border:1px solid #45475a; border-radius:4px; font-size:12px;" onchange="selectModel(this.value)">
+            <option value="">Select model...</option>
+        </select>
+    </div>
+
+    <!-- Tab container -->
+    <div class="tab-container">
+        <!-- Tab buttons -->
+        <div class="tab-buttons">
+            <button class="tab-button active" onclick="switchTab('chat')">💬 Chat</button>
+            <button class="tab-button" onclick="switchTab('tokens')">📊 Tokens</button>
+            <button class="tab-button" onclick="switchTab('servers')">🔧 Servers</button>
+             <button class="tab-button" id="lm-instances-btn" onclick="switchTab('lm-instances')">🧠 LM Instances</button>
+             <button class="tab-button" onclick="switchTab('tools-config')">⚙️ Tools Config</button>
+             <button class="tab-button" onclick="switchTab('memory-db')">🧠 Memory DB</button>
+             <button class="tab-button" onclick="switchTab('logs')">📋 Logs <span id="logBadge" style="display:none; background:#f38ba8; color:#1e1e2e; padding:0 4px; border-radius:8px; font-size:10px; margin-left:4px;">0</span></button>
         </div>
 
         <!-- Chat tab -->
@@ -377,7 +376,7 @@
         </div>
 
         <!-- LM Instances tab -->
-        <div class="tab-content" id="lm-instances-content">
+        <div class="tab-content" id="lm-instances-tab">
             <div class="lm-instances-container" id="lmInstancesContainer">
                 <div class="lm-instances-header">
                     <h3>🧠 LM Studio Instances</h3>

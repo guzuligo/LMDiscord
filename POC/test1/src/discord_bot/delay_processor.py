@@ -4,6 +4,8 @@ Delay Processor Module
 Handles delayed message processing for Discord bot.
 Provides configurable delays before processing messages
 to allow for follow-up message batching.
+
+Includes cancellation support via the cancellation manager.
 """
 
 import asyncio
@@ -39,6 +41,26 @@ class DelayProcessor:
         """
         self._default_delay = value
 
+    async def _check_cancellation(self, channel_id: int, delay: int) -> bool:
+        """Check if cancellation was requested during the delay.
+        
+        Args:
+            channel_id: Discord channel ID
+            delay: Total delay time (for incremental checking)
+            
+        Returns:
+            True if cancelled, False if should continue
+        """
+        try:
+            from src.discord_bot.cancellation import get_cancellation_manager
+            manager = get_cancellation_manager()
+            if await manager.is_cancelled(channel_id):
+                logger.info(f"Cancellation detected for channel {channel_id}")
+                return True
+        except Exception as e:
+            logger.debug(f"Error checking cancellation for channel {channel_id}: {e}")
+        return False
+
     async def process_with_delay(
         self,
         delay: Optional[int],
@@ -49,6 +71,8 @@ class DelayProcessor:
         *args
     ) -> None:
         """Wait for a delay, then call the handler callback.
+        
+        Supports cancellation checks during the delay period.
 
         Args:
             delay: Delay in seconds (uses default if None)
@@ -62,7 +86,13 @@ class DelayProcessor:
             actual_delay = delay if delay is not None else self._default_delay
             logger.info(f"Waiting {actual_delay} seconds before processing: {content[:50]}...")
 
-            await asyncio.sleep(actual_delay)
+            # Check cancellation in small increments during the delay
+            check_interval = 1  # Check every 1 second
+            for _ in range(actual_delay):
+                if await self._check_cancellation(channel_id, actual_delay):
+                    logger.info(f"Cancellation detected during delay for channel {channel_id}")
+                    return
+                await asyncio.sleep(check_interval)
 
             # Check if something is already processing
             bot_instance = None
@@ -98,6 +128,8 @@ class DelayProcessor:
 
         Sets the lock BEFORE the delay so that subsequent messages arriving
         during the delay are properly queued and processed as a batch.
+        
+        Supports cancellation checks during the delay period.
 
         Args:
             message: The discord.Message object
@@ -119,7 +151,22 @@ class DelayProcessor:
             # Set lock BEFORE delay so subsequent messages get queued
             processing_lock[channel_id] = True
 
-            await asyncio.sleep(actual_delay)
+            # Check cancellation in small increments during the delay
+            check_interval = 1  # Check every 1 second
+            for _ in range(actual_delay):
+                cancelled = await self._check_cancellation(channel_id, actual_delay)
+                if cancelled:
+                    logger.info(f"Cancellation detected during delay for channel {channel_id}")
+                    processing_lock[channel_id] = False
+                    try:
+                        import discord
+                        channel = message.channel if hasattr(message, 'channel') else None
+                        if channel:
+                            await channel.send("⚠️ Session cancelled. I've stopped processing your request.")
+                    except Exception as e:
+                        logger.error(f"Failed to send cancellation message: {e}")
+                    return
+                await asyncio.sleep(check_interval)
 
             logger.info("Delay complete, processing active session message now")
 

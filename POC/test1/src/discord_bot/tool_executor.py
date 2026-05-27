@@ -28,12 +28,14 @@ class ToolCallHandler:
         turn: int,
         safe_downloader: Any,
         make_lm_call_func: Optional[Any] = None,
-        get_bot_instance: Optional[Any] = None
+        get_bot_instance: Optional[Any] = None,
+        check_pending: Optional[Any] = None
     ) -> Optional[str]:
         """Process tool calls from LM Studio (new session variant).
 
         Processes ALL tool calls in the batch before returning, enabling
-        proper multi-tool-call support.
+        proper multi-tool-call support. Checks for pending messages between
+        each tool call to enable real-time interruption.
 
         Args:
             tool_calls: List of tool call dicts
@@ -43,21 +45,30 @@ class ToolCallHandler:
             safe_downloader: SafeImageDownloader instance
             make_lm_call_func: Optional function to make LM calls (for mini-context)
             get_bot_instance: Optional callable that returns the DiscordBot instance
+            check_pending: Optional callable that returns pending message if available
 
         Returns:
-            Response text, or None if end_session was called or no special tools were used
+            Response text, or None if end_session was called or no special tools were used,
+            or a dict {"interrupted": True, "pending_message": {...}} if a pending message was found
         """
         image_describe_results: List[str] = []
         image_compare_results: List[str] = []
         had_end_session = False
 
-        for tool_call in tool_calls:
+        for i, tool_call in enumerate(tool_calls):
             func = tool_call.get("function", {})
             func_name = func.get("name", "")
             tool_call_id = tool_call.get("id", "")
             func_args = func.get("arguments", "{}")
 
             logger.info(f"Turn {turn + 1}: LM Studio called tool: {func_name}")
+
+            # Check pending messages before next tool call (except after last)
+            if check_pending and i < len(tool_calls) - 1:
+                pending = await check_pending()
+                if pending:
+                    logger.info(f"Pending message detected during tool {i+1}/{len(tool_calls)}, interrupting")
+                    return {"interrupted": True, "pending_message": pending}
 
             if func_name == "end_session":
                 had_end_session = True
@@ -111,12 +122,14 @@ class ToolCallHandler:
         turn: int,
         safe_downloader: Any,
         make_lm_call_func: Optional[Any] = None,
-        get_bot_instance: Optional[Any] = None
+        get_bot_instance: Optional[Any] = None,
+        check_pending: Optional[Any] = None
     ) -> Optional[Dict]:
         """Process tool calls from LM Studio (active session variant).
 
         Processes ALL tool calls in the batch before returning, enabling
-        proper multi-tool-call support.
+        proper multi-tool-call support. Checks for pending messages between
+        each tool call to enable real-time interruption.
 
         Args:
             tool_calls: List of tool call dicts
@@ -125,19 +138,27 @@ class ToolCallHandler:
             safe_downloader: SafeImageDownloader instance
             make_lm_call_func: Optional function to make LM calls (for mini-context)
             get_bot_instance: Optional callable that returns the DiscordBot instance
+            check_pending: Optional callable that returns pending message if available
 
         Returns:
-            Dict with 'farewell' key if end_session was called, None otherwise
+            Dict with 'farewell' key if end_session was called, None to continue,
+            or {"interrupted": True, "pending_message": {...}} if a pending message was found
         """
         farewell_msg = None
 
-        for tool_call in tool_calls:
+        for i, tool_call in enumerate(tool_calls):
             func = tool_call.get("function", {})
             func_name = func.get("name", "")
             tool_call_id = tool_call.get("id", "")
             func_args = func.get("arguments", "{}")
 
             if func_name == "end_session":
+                # Check pending messages before end_session (except after last)
+                if check_pending and i < len(tool_calls) - 1:
+                    pending = await check_pending()
+                    if pending:
+                        logger.info(f"Pending message detected during active session tool {i+1}/{len(tool_calls)}, interrupting")
+                        return {"interrupted": True, "pending_message": pending}
                 try:
                     args = json.loads(func_args)
                     farewell_msg = args.get("farewell_message", "Goodbye!")
@@ -145,7 +166,14 @@ class ToolCallHandler:
                     farewell_msg = "Goodbye!"
                 break  # Stop processing remaining tools after end_session
 
-            elif func_name == "image_describe":
+            # Check pending messages before next tool call (except after last)
+            if check_pending and i < len(tool_calls) - 1:
+                pending = await check_pending()
+                if pending:
+                    logger.info(f"Pending message detected during active session tool {i+1}/{len(tool_calls)}, interrupting")
+                    return {"interrupted": True, "pending_message": pending}
+
+            if func_name == "image_describe":
                 await self._handle_image_describe_active(
                     func_args, messages_for_lm, tool_call_id, safe_downloader, make_lm_call_func
                 )

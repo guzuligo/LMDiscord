@@ -49,6 +49,30 @@ First implementation attempt of the Discord bot with LM Studio integration, foll
 5. Raw security errors should never be sent to LM Studio → use user-friendly messages
 6. Modular architecture (6 files vs 1 large file) is much easier to maintain and debug
 7. POC-first approach works well - each POC folder is independently testable
+8. terminal.log provides a convenient way to share logs for debugging — just ask to check the log file
+
+## Recent Updates
+### Terminal Log Feature (5/27/2026)
+- **terminal.log**: Auto-generated log file that mirrors ALL terminal output exactly
+  - Uses `_TeeStream` class to redirect both `sys.stdout` AND `sys.stderr` — every print() and logging output goes to both terminal and terminal.log
+  - File is truncated (cleared) whenever the application starts
+  - Located in project root (POC/test1/terminal.log)
+  - Git-ignored via .gitignore
+  - Useful for sharing logs when asking for help debugging — just tell me to check `terminal.log`
+  - Files changed:
+    - `src/logger.py` (added `_TeeStream` class with `truncate` parameter, `enable_terminal_log()` function redirects both stdout and stderr in `setup_logging()`)
+    - `src/app.py` (added `setup_logging()` call on startup)
+
+## Feature Requests
+### FEAT-003: Debug Mode Flag for Logging (5/27/2026)
+- **Problem**: `logging.basicConfig(level=logging.DEBUG)` outputs verbose debug logs (discord.py HTTP traces, urllib3 connection details, etc.) to the terminal on every startup, even when not debugging
+- **Request**: Add a `--debug` CLI flag or `DEBUG_MODE` config option that controls logging verbosity
+  - **Debug mode**: `logging.basicConfig(level=logging.DEBUG)` — full verbose output (current behavior)
+  - **Normal mode**: `logging.basicConfig(level=logging.INFO)` — suppresses DEBUG-level output from libraries
+- **Files to modify**:
+  - `src/logger.py` — `setup_logging()` to accept a `debug_level` parameter
+  - `src/app.py` — parse CLI args or read config to determine debug mode
+  - `src/config.py` — add `debug_mode` config option if applicable
 
 ## Next Feature: Server Configuration System (FEAT-001)
 - Per-server enable/disable and per-channel allow/deny lists
