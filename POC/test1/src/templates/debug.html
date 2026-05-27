@@ -11,7 +11,7 @@
         <!-- Header -->
         <div class="debug-header">
             <h1>🔧 Debug Panel</h1>
-            <button class="debug-close-btn" onclick="closeDebugPanel()">✕ Close</button>
+            <a href="/" class="debug-back-link">← Back to Main</a>
         </div>
 
         <!-- Connection Status -->
@@ -79,6 +79,16 @@
                 <div class="debug-panel-title">⚙️ Settings Override</div>
                 <div class="settings-override-grid">
                     <div class="settings-override-item">
+                        <label class="settings-override-label">Log Level</label>
+                        <select class="settings-override-input" id="debugLogLevel" onchange="updateLogLevel(this.value)">
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO">INFO</option>
+                            <option value="WARNING" selected>WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                            <option value="CRITICAL">CRITICAL</option>
+                        </select>
+                    </div>
+                    <div class="settings-override-item">
                         <label class="settings-override-label">Temperature (0.0-2.0)</label>
                         <input type="number" class="settings-override-input" id="debugTemperature" step="0.1" min="0" max="2" value="0.7">
                         <button class="settings-override-save" onclick="saveSettingOverride('temperature', document.getElementById('debugTemperature').value)">Save</button>
@@ -99,6 +109,26 @@
                         <button class="settings-override-save" onclick="saveSettingOverride('message_delay', document.getElementById('debugMessageDelay').value)">Save</button>
                     </div>
                 </div>
+            </div>
+
+            <!-- Module Filter -->
+            <div class="debug-panel full-width">
+                <div class="debug-panel-title">🔍 Module Filter (Advanced)</div>
+                <p style="font-size: 12px; color: #a6adc8; margin: 5px 0 10px 0;">
+                    Modules listed below are suppressed from user-facing logs. Logs still appear in the debug panel.
+                    Add or remove module names to control filtering. Use comma-separated values.
+                </p>
+                <div style="display: flex; gap: 10px; align-items: stretch;">
+                    <div style="flex: 1;">
+                        <label class="settings-override-label">Filtered Modules</label>
+                        <textarea class="settings-override-input" id="moduleFilterInput" rows="3" style="resize: vertical; font-family: monospace; font-size: 11px;" placeholder="typing_indicator, token_tracker, discord_api"></textarea>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 18px;">
+                        <button class="diagnostic-btn" onclick="saveModuleFilter()">💾 Save Filter</button>
+                        <button class="diagnostic-btn" onclick="resetModuleFilter()">↩️ Reset to Default</button>
+                    </div>
+                </div>
+                <div id="moduleFilterStatus" style="margin-top: 8px; font-size: 12px; color: #a6adc8;"></div>
             </div>
         </div>
 

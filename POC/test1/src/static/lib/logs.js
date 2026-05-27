@@ -107,7 +107,7 @@ function updateLogDisplay(logs, stats) {
             const logEl = createLogElement(log);
             panelContainer.appendChild(logEl);
         }
-        panelContainer.scrollTop = panelContainer.scrollHeight;
+        // Removed auto-scroll to bottom - users can scroll manually to view new logs
     }
     
     // Update tab container with all logs if active
@@ -118,7 +118,7 @@ function updateLogDisplay(logs, stats) {
             for (const log of logs) {
                 logsTabContainer.appendChild(createLogElement(log));
             }
-            logsTabContainer.scrollTop = logsTabContainer.scrollHeight;
+            // Removed auto-scroll - preserves user's scroll position
         }
     }
     

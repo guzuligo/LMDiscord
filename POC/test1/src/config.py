@@ -206,6 +206,31 @@ class Config:
         self.set("settings", "allowed_image_hostnames", value)
 
     # ====================================================================
+    # Logging Configuration Properties
+    # ====================================================================
+
+    @property
+    def log_level(self) -> str:
+        """Get the log level setting.
+        
+        Returns:
+            Log level string (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        """
+        return self.get("settings", "log_level", "WARNING")
+
+    @log_level.setter
+    def log_level(self, value: str) -> None:
+        """Set the log level setting.
+        
+        Args:
+            value: Log level string (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        """
+        valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if value.upper() not in valid_levels:
+            raise ValueError(f"Invalid log level. Must be one of: {valid_levels}")
+        self.set("settings", "log_level", value.upper())
+
+    # ====================================================================
     # Server Configuration Methods (FEAT-001)
     # ====================================================================
 

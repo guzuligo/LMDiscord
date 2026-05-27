@@ -6,6 +6,7 @@ A set of tools and procedures that enable the Main Bot to manage conversation co
 1. **Session Start Context Initialization** — brief setup from recent channel activity
 2. **Context Compression** — on-demand compression when conversation grows too long
 3. **Channel Search** — foundation tool to fetch and filter recent channel messages
+4. **Mini-Context Handover** — check for pending messages between tool calls during multi-tool execution
 
 ## Architecture
 
@@ -14,10 +15,11 @@ discord_bot/
 ├── context_management.md          # This file - design documentation
 ├── tools/
 │   └── builtins/
-│       ├── channel_search.py      # NEW: ChannelSearchTool
-│       └── context_compressor.py  # NEW: ContextCompressor
-└── bot_core.py                    # Modified: session start context init
-└── message_handler.py             # Modified: context injection
+│       ├── channel_search.py      # ChannelSearchTool
+└── bot_core.py                    # Session management, processing lock
+└── message_handler.py             # Session routing, interruption handling
+└── message_processor.py           # Tool call processing, check_pending callback
+└── tool_executor.py               # Inter-tool-call queue checking
 ```
 
 ---
@@ -55,19 +57,6 @@ Fetch recent Discord channel messages with optional filtering and compression. U
 - **Method**: `execute(messages, **kwargs)` — formats pre-fetched message data
 - **Data Source**: `bot_core.py` → `get_channel_messages()` and `_fetch_channel_messages()` — async Discord API calls
 - **Message Format**: Each message contains `{author, display_name, content, timestamp, is_reply, replied_to_author, replied_to_content, has_image}`
-
-### Integration Path
-```
-LM Studio calls channel_search
-    ↓
-tool_executor._handle_channel_search()
-    ↓
-bot.get_channel_messages(channel_id, limit, search_query, username, compress_long)
-    ↓
-bot._fetch_channel_messages(channel_id, limit) — Discord API async call
-    ↓
-ChannelSearchTool.execute() formats result for LM Studio
-```
 
 ### Key Behavior
 - Skips bot's own messages (already in conversation history)
@@ -111,12 +100,6 @@ No active conversation with bot before this message.]
   2. Send compressed messages to a quick LM call for summarization
   3. Inject summary into conversation history before current message
 
-### LM-Generated Summary
-- **System prompt**: "You are a conversation summarizer. Summarize who is talking to whom, what topics are discussed, and what is resolved vs ongoing."
-- **Output format**: `[CHANNEL CONTEXT: <summary>]`
-- **Max length**: ~300 characters
-- **Trigger**: Always at session start (no decision needed)
-
 ---
 
 ## Feature 3: Context Compression Tool
@@ -132,132 +115,247 @@ Compress old conversation messages into a compact summary when the conversation 
 
 **Manual trigger**:
 - Main Bot decides when it "feels like it" (via LM judgment)
-- Bot calls `context_compress` tool when conversation is getting long but subject doesn't need all the chitchat
 
-### Tool Definition
+---
+
+## Feature 4: Mini-Context Handover Between Tool Calls
+
+### Problem Statement
+
+When the LM Studio model returns multiple tool calls in a single response, the bot executes them sequentially in a "mini-context" without checking for new user messages between each tool call. This means:
+
+1. User sends "search for recent announcements" → bot starts mini-context
+2. Bot executes tool 1 of 3 (e.g., channel_search)
+3. User sends "wait, actually search for errors not announcements" while bot is working
+4. Bot finishes tool 1, tool 2, tool 3 without noticing the correction
+5. Bot posts its (now outdated) response, then processes the queued messages
+
+This creates a poor user experience where the bot seems "deaf" during multi-tool operations and can't respond to corrections.
+
+### Single-Bot Constraint
+
+**Important**: This bot runs on consumer hardware with GPU limitations. Only ONE bot session can run at a time. When the bot is working on a task, new messages from users are queued and processed sequentially after the current task completes.
+
+The mini-context handover feature allows the bot to temporarily pause its current task to check for new messages between tool calls, without starting a second bot session.
+
+### Solution: Mini-Context Handover
+
+After each tool call completes, check the `_pending_messages` queue before proceeding to the next tool call. If a new message exists, temporarily pause (hand over from) the mini-context and process the new message immediately.
+
+### Handover Behavior
+
+When a pending message is detected during mini-context execution:
+
+1. **Mini-context pauses**: The current tool execution sequence stops
+2. **Main bot takes over**: Checks the pending message
+3. **User intent evaluation**:
+   - **Simple reply needed**: Bot replies to user, then resumes mini-context with remaining tools
+   - **Behavior change needed**: Bot instructs mini-context to adjust (e.g., "search for errors instead of announcements")
+   - **Cancellation needed**: Bot cancels mini-context entirely and handles the new request
+
+### Architecture
+
+```
+discord_bot/
+├── bot_core.py                    # Handle interruption result (new session)
+├── message_handler.py             # Propagate interruption for new session
+├── message_processor.py           # Pass check_pending callback (new session)
+└── tool_executor.py               # Check queue between tool calls
+```
+
+### Implementation Status
+
+#### 1. `ToolCallHandler.process_tool_calls()` (tool_executor.py) ✅ IMPLEMENTED
+
+Has `check_pending` callback parameter. After each tool call completes (except the last), calls this callback:
+
 ```python
-{
-    "type": "function",
-    "function": {
-        "name": "context_compress",
-        "description": "Compress old conversation messages into a compact summary to free context space.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "compress_before_message_index": {"type": "integer", "description": "Compress messages before this index. Null=auto"},
-                "target_summary_length": {"type": "integer", "description": "Max chars for summary. Default: 300"}
-            }
-        }
-    }
-}
+async def process_tool_calls(
+    self,
+    tool_calls: List[Dict],
+    messages_for_lm: List[Dict],
+    channel,
+    turn: int,
+    safe_downloader: Any = None,
+    make_lm_call_func: Optional[Callable] = None,
+    get_bot_instance: Optional[Callable] = None,
+    check_pending: Optional[Callable] = None
+) -> Any:
+    for i, tool_call in enumerate(tool_calls):
+        # ... execute tool call ...
+        
+        # Check pending messages before next tool call (except last)
+        if check_pending and i < len(tool_calls) - 1:
+            pending = await check_pending()
+            if pending:
+                logger.info(f"Pending message detected during tool {i+1}/{len(tool_calls)}, interrupting")
+                return {"interrupted": True, "pending_message": pending}
 ```
 
-### Implementation
-- **File**: `src/tools/builtins/context_compressor.py`
-- **Class**: `ContextCompressor`
-- **Method**: `compress(messages, target_length=300)`
-- **Returns**: `(summary_string, cutoff_index, recent_messages)`
+#### 2. `ToolCallHandler.process_tool_calls_active()` (tool_executor.py) ✅ IMPLEMENTED
 
-### Compression Logic
-```
-Before: [msg1, msg2, msg3, ..., msg25]  (25 messages, ~8000 tokens)
-    ↓
-Keep last 6 messages fresh, compress the rest
-    ↓
-After: ["[CONTEXT: Alice and Bob discussed weather and games (resolved). Topic: general chat.]", msg20, msg21, msg22, msg23, msg24, msg25]
-       (7 items, ~500 tokens)
-```
+Same approach for active session tool processing:
 
-### LM-Generated Summary
-- **System prompt**: "You are a conversation summarizer. Output ONLY the summary, nothing else."
-- **Input**: Old conversation messages (all except last 6)
-- **Output format**: `[CONTEXT: <summary>]`
-- **Max length**: Configurable (default 300 chars)
-
----
-
-## Full Flow: Session Start to Compression
-
-```
-═══════════════════════════════════════════════════════
-  PHASE 1: SESSION START
-═══════════════════════════════════════════════════════
-
-@Bot hello
-    ↓
-[1] ChannelSearchTool.search(channel_id, limit=15, compress_long=true)
-    → Returns: [compressed recent messages from last 15 user messages]
-    ↓
-[2] LM generates context summary:
-    Input: compressed messages
-    Output: "[CHANNEL CONTEXT: Alice asked about weather (resolved). Bob and Carol discussed games (ongoing).]"
-    ↓
-[3] Build conversation history:
-    [
-      {"role": "system", "content": system_prompt},
-      {"role": "user", "content": "[CHANNEL CONTEXT: ...]"},       ← injected context
-      {"role": "user", "content": "Alice says: hello"}            ← current message
-    ]
-    ↓
-[4] Normal LM processing → Bot responds
-
-═══════════════════════════════════════════════════════
-  PHASE 2: ACTIVE SESSION (conversation grows)
-═══════════════════════════════════════════════════════
-
-User messages continue...
-Conversation history grows: 5, 10, 15, 20, 25 messages...
-    ↓
-[Auto-trigger check after each response]
-    Condition 1: Token count > 80% of max_tokens?
-    Condition 2: Message count > 20?
-    ↓
-If triggered → Auto-compress
-
-OR
-
-Main Bot decides (via LM judgment): "conversation getting long"
-    → Calls context_compress tool manually
-
-═══════════════════════════════════════════════════════
-  PHASE 3: CONTEXT COMPRESSION
-═══════════════════════════════════════════════════════
-
-[1] ContextCompressor.compress(messages, target_length=300)
-    → Splits: old_messages (all except last 6) + recent_messages (last 6)
-    → LM generates: "[CONTEXT: Alice and Bob discussed weather, games, and weekend plans. All topics resolved.]"
-    → Returns: (summary, cutoff_index, recent_messages)
-    ↓
-[2] Rebuild conversation history:
-    [
-      {"role": "system", "content": system_prompt},
-      {"role": "user", "content": "[CONTEXT: ...]"},              ← compressed summary
-      ... recent_messages (last 6) ...
-    ]
-    ↓
-[3] Continue conversation with fresh context
-
-═══════════════════════════════════════════════════════
-  PHASE 4: SESSION END
-═══════════════════════════════════════════════════════
-
-end_session tool called OR timeout (600s)
-    ↓
-Session cleared, all context discarded
-    ↓
-Next session will repeat PHASE 1
+```python
+async def process_tool_calls_active(
+    self,
+    tool_calls: List[Dict],
+    messages_for_lm: List[Dict],
+    turn: int,
+    safe_downloader: Any = None,
+    make_lm_call_func: Optional[Callable] = None,
+    get_bot_instance: Optional[Callable] = None,
+    check_pending: Optional[Callable] = None
+) -> Optional[Dict]:
+    for i, tool_call in enumerate(tool_calls):
+        # ... execute tool call ...
+        
+        # Check pending messages before next tool call (except last)
+        if check_pending and i < len(tool_calls) - 1:
+            pending = await check_pending()
+            if pending:
+                logger.info(f"Pending message detected during active session tool {i+1}/{len(tool_calls)}, interrupting")
+                return {"interrupted": True, "pending_message": pending}
 ```
 
----
+#### 3. `message_processor.py` — Pass the callback
 
-## Open Questions — Resolved
+**Active session** (`process_active_session()`): ✅ ALREADY IMPLEMENTED
+```python
+# Already passes check_pending to process_tool_calls_active:
+end_session_result = await self._tool_call_handler.process_tool_calls_active(
+    tool_calls, messages_for_lm, turn,
+    self._safe_downloader,
+    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
+    get_bot_instance=lambda: self._bot_instance,
+    check_pending=lambda: self.check_pending_messages(channel_id)
+)
+```
 
-| Question | Decision | Rationale |
-|----------|----------|-----------|
-| 1. Channel Search: sync or async? | To be determined during implementation | Discord.py's `history()` is async, but current architecture uses `run_in_executor`. Will evaluate during coding. |
-| 2. Context Compression trigger? | **Token monitoring (>80%) + message count (>20) + bot judgment** | Three complementary signals: token threshold for efficiency, message count as simple heuristic, LM judgment for nuance |
-| 3. Auto-trigger or bot-decided? | **Both** — auto-trigger on token/message thresholds, bot can also decide | Auto ensures reliability, bot judgment handles cases where thresholds aren't met but compression is still useful |
-| 4. LM-generated or rule-based summary? | **LM-generated** | Too complex to make rule-based effectively. LM provides richer, more accurate summaries. |
+**New session** (`_process_session()`): ⚠️ NEEDS IMPLEMENTATION
+```python
+# NEEDS TO ADD check_pending to process_tool_calls call:
+response_text = await self._tool_call_handler.process_tool_calls(
+    tool_calls, messages_for_lm, channel, turn,
+    self._safe_downloader,
+    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
+    get_bot_instance=lambda: self._bot_instance,
+    check_pending=lambda: self.check_pending_messages(channel_id)  # ← ADD THIS
+)
+```
+
+#### 4. `bot_core.py` — Handle interruption result
+
+**Active session** (`_process_active_session_batch()`): ✅ ALREADY IMPLEMENTED
+```python
+# Already handles interruption for active sessions:
+if isinstance(result, dict) and result.get("interrupted", False):
+    pending_msg = result.get("pending_message")
+    if pending_msg:
+        logger.info(f"Active session interrupted by pending message")
+        self._processing_lock[channel_id] = False
+        await self._process_active_session_batch(message, pending_msg["content"], ...)
+        return
+```
+
+**New session** (`_handle_new_session_message()`): ⚠️ NEEDS IMPLEMENTATION
+```python
+# NEEDS TO HANDLE interruption result from message_handler
+```
+
+### Flow Diagram
+
+```
+═══════════════════════════════════════════════════════════
+  MINI-CONTEXT EXECUTION WITH HANDOVER
+═══════════════════════════════════════════════════════════
+
+User: "Search for recent announcements"
+  → Bot starts mini-context: [channel_search, channel_search, image_describe]
+
+[1] Execute channel_search (results: announcements found)
+    ↓
+[2] Check pending messages queue
+    ├─ Empty → Continue to next tool (mini-context continues)
+    └─ Has message → HANDOVER to main bot
+
+═══════════════════════════════════════════════════════════
+  HANDOVER SCENARIOS
+═══════════════════════════════════════════════════════════
+
+Scenario A: Simple reply needed
+    ↓
+[1] Main bot replies: "Found 3 announcements, let me describe one..."
+    ↓
+[2] Mini-context resumes: Continue with image_describe
+    ↓
+[3] Bot completes task
+
+Scenario B: Behavior change needed
+    ↓
+[1] User: "Actually search for errors, not announcements"
+    ↓
+[2] Main bot: "Updating search criteria..."
+    ↓
+[3] Mini-context resumes with updated parameters
+    ↓
+[4] Bot completes task with new criteria
+
+Scenario C: Cancellation needed
+    ↓
+[1] User: "Stop, I found it myself"
+    ↓
+[2] Main bot: "Alright, let me know if you need anything!"
+    ↓
+[3] Mini-context cancelled, remaining tools skipped
+
+═══════════════════════════════════════════════════════════
+  NO HANDOVER (No pending messages)
+═══════════════════════════════════════════════════════════
+
+[1] Execute channel_search
+    ↓
+[2] Check pending → Empty
+    ↓
+[3] Execute channel_search
+    ↓
+[4] Check pending → Empty
+    ↓
+[5] Execute image_describe
+    ↓
+[6] No more tools → Continue to next LM turn
+    ↓
+[7] Bot responds to user
+```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Check between tools, not during | Tool execution is atomic; checking mid-execution would require complex state management |
+| Single bot session | Only one bot runs at a time due to GPU constraints; handover reuses the same session |
+| Use existing `check_pending_messages()` | Reuses existing mechanism; no new queue management needed |
+| Only check between tools (not last) | No point checking after the last tool since there's nothing to cancel |
+| Mini-context pauses, not restarts | When handover completes, mini-context resumes where it left off |
+
+### Edge Cases Handled
+
+1. **Session expired during tool execution** — `check_pending_messages()` already checks `bot._session_manager.is_active(channel_id)` and clears expired sessions
+2. **Multiple messages queued** — First pending message is processed immediately; remaining messages are handled by `_process_queued_pending_messages()`
+3. **Bot's own message** — `check_pending_messages()` returns only non-bot messages (filtered at queue time)
+4. **Tool call failure** — Failed tool turns are tracked separately; interruption takes priority
+5. **Handover with no pending** — If no pending messages, mini-context continues normally (no overhead)
+
+### Testing Checklist
+
+- [ ] Multi-tool call: User sends message during tool execution → bot interrupts and processes new message
+- [ ] Multi-tool call: No new messages → bot completes all tools normally (no handover)
+- [ ] Active session: Interruption clears lock and processes pending message
+- [ ] New session: Interruption handled correctly (NEEDS IMPLEMENTATION)
+- [ ] Multiple queued messages: First processed immediately, rest queued
+- [ ] Session expired during tool execution: Expired session handled correctly
+- [ ] Handover with reply only: Bot replies and resumes mini-context
+- [ ] Handover with cancellation: Bot cancels mini-context and handles new request
 
 ---
 
@@ -291,7 +389,7 @@ Next session will repeat PHASE 1
 | `ContextCompressor` | Depends on LM client for summarization |
 | `SessionManager` | Provides session state (active/inactive) |
 | `MessageHandler` | Orchestrates session start context injection |
-| `MemoryBot` (future) | Will use similar patterns for memory search |
+| `ToolCallHandler` | Inter-tool-call queue checking for mini-context handover |
 
 ---
 
@@ -301,3 +399,4 @@ Next session will repeat PHASE 1
 2. **Per-channel compression thresholds** — Some channels may need different settings
 3. **Compressed context export** — Save compressed summaries for analytics
 4. **Smart message retention** — Keep important messages (images, tool results) uncompressed
+5. **Multi-bot support** — Allow multiple concurrent bot sessions on high-end GPUs

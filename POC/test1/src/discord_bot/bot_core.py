@@ -534,8 +534,8 @@ class DiscordBot:
             # REQ-004 / CONCEPT-001: Inject wake-up memory into system prompt
             await self._on_session_started(channel_id, user_id, author_name)
 
-            # Handle via message handler
-            await self._message_handler.handle_new_session(
+            # Handle via message handler and capture result
+            result = await self._message_handler.handle_new_session(
                 message=message,
                 content=content,
                 message_type=message_type,
@@ -551,8 +551,32 @@ class DiscordBot:
                 reply_context=reply_context
             )
 
-            # Store token usage
-            # Note: usage is returned from message handler in future refactoring
+            # Check if processing was interrupted by a pending message
+            if isinstance(result, dict) and result.get("interrupted", False):
+                pending_msg = result.get("pending_message")
+                if pending_msg:
+                    logger.info(f"New session interrupted by pending message from {pending_msg.get('author_display', 'unknown')}")
+                    # Clear lock immediately so the pending message can be processed
+                    self._processing_lock[channel_id] = False
+                    # Process the pending message immediately (don't queue it)
+                    queued_attachments = pending_msg.get("image_attachments", [])
+                    await self._handle_new_session_message(
+                        message,
+                        pending_msg["content"],
+                        pending_msg.get("message_type", "mention"),
+                        channel_id,
+                        pending_msg["author_name"],
+                        pending_msg["author_display"],
+                        pending_msg.get("author_nick"),
+                        pending_msg.get("user_id", ""),
+                        image_attachments=queued_attachments
+                    )
+                    return
+
+            # Store token usage if available
+            usage = result.get("usage") if isinstance(result, dict) else None
+            if usage:
+                self._token_tracker.store_token_usage(channel_id, usage)
         finally:
             self._processing_lock[channel_id] = False
 
@@ -607,6 +631,27 @@ class DiscordBot:
                 display_changed=display_changed,
                 reply_context=reply_context
             )
+
+            # Check if processing was interrupted by a pending message
+            if isinstance(result, dict) and result.get("interrupted", False):
+                pending_msg = result.get("pending_message")
+                if pending_msg:
+                    logger.info(f"Active session interrupted by pending message from {pending_msg.get('author_display', 'unknown')}")
+                    # Clear lock immediately so the pending message can be processed
+                    self._processing_lock[channel_id] = False
+                    # Process the pending message immediately (don't queue it)
+                    queued_attachments = pending_msg.get("image_attachments", [])
+                    await self._process_active_session_batch(
+                        message,
+                        pending_msg["content"],
+                        channel_id,
+                        pending_msg["author_name"],
+                        pending_msg["author_display"],
+                        pending_msg.get("author_nick"),
+                        [],  # No additional pending messages
+                        image_attachments=queued_attachments
+                    )
+                    return
 
             # Update session activity AFTER successful processing (PENDING-004 fix)
             # This ensures failed sessions don't incorrectly refresh the last-active timestamp
@@ -812,6 +857,63 @@ class DiscordBot:
             logger.error(f"Failed to schedule memory pruning for channel {channel_id}: {e}")
         
         logger.info(f"Cleared session for channel {channel_id}")
+
+    # --- Session Cancellation ---
+
+    async def cancel_session(self, channel_id: int) -> bool:
+        """Cancel the current session processing for a channel.
+        
+        Signals cancellation and sends a confirmation message to the channel.
+        The cancellation will be checked at the next opportunity by the
+        message processor (before tool calls, between turns, etc.).
+        
+        Args:
+            channel_id: Discord channel ID
+            
+        Returns:
+            True if cancellation was successfully signaled, False if no active session
+        """
+        manager = get_cancellation_manager()
+        
+        # Check if there's an active session or processing lock
+        if not self._session_manager.is_active(channel_id) and not self._processing_lock.get(channel_id, False):
+            logger.info(f"No active session or processing for channel {channel_id}, nothing to cancel")
+            return False
+        
+        # Signal cancellation
+        await manager.cancel(channel_id)
+        logger.info(f"Cancellation signaled for channel {channel_id}")
+        
+        # Try to send confirmation message
+        try:
+            channel = self.client.get_channel(channel_id)
+            if channel:
+                await channel.send("⚠️ Session cancelled. I've stopped processing your request.")
+        except Exception as e:
+            logger.error(f"Failed to send cancellation message to channel {channel_id}: {e}")
+        
+        return True
+    
+    async def cancel_all_sessions(self) -> int:
+        """Cancel all active sessions.
+        
+        Returns:
+            Number of sessions that were cancelled
+        """
+        channels = self._session_manager.get_active_channels()
+        count = 0
+        
+        for channel_id in channels:
+            if await self.cancel_session(channel_id):
+                count += 1
+        
+        logger.info(f"Cancelled {count} session(s)")
+        return count
+    
+    @property
+    def cancellation_manager(self):
+        """Get the cancellation manager instance."""
+        return get_cancellation_manager()
 
     # --- Token Usage ---
 
@@ -1090,6 +1192,28 @@ class DiscordBot:
                             has_image = True
                             image_urls.append(attachment.url)
             
+            # Check for image URLs in embeds (images shared via embeds, not attachments)
+            if hasattr(msg, 'embeds') and msg.embeds:
+                for embed in msg.embeds:
+                    # Check embed thumbnail for image URL
+                    if hasattr(embed, 'url') and embed.url:
+                        url = embed.url
+                        if url not in image_urls:
+                            image_urls.append(url)
+                            has_image = True
+                    # Check embed image for image URL
+                    if hasattr(embed, 'image') and embed.image and hasattr(embed.image, 'url'):
+                        url = embed.image.url
+                        if url not in image_urls:
+                            image_urls.append(url)
+                            has_image = True
+                    # Check embed footer icon for image URL
+                    if hasattr(embed, 'footer') and embed.footer and hasattr(embed.footer, 'icon_url'):
+                        url = embed.footer.icon_url
+                        if url and url not in image_urls:
+                            image_urls.append(url)
+                            has_image = True
+            
             content = (msg.content or "").strip()
             if not content:
                 content = "[Image/Attachment only]"
@@ -1258,13 +1382,39 @@ class DiscordBot:
                                 has_image = True
                                 # Extract the attachment URL (Discord CDN URL)
                                 image_urls.append(attachment.url)
-                                   
+                
+                # Check for image URLs in embeds (images shared via embeds, not attachments)
+                embeds = []
+                if hasattr(full_msg if 'full_msg' in locals() else msg, 'embeds'):
+                    embeds = full_msg.embeds if 'full_msg' in locals() else msg.embeds
+                if embeds:
+                    for embed in embeds:
+                        # Check embed thumbnail for image URL
+                        if hasattr(embed, 'url') and embed.url:
+                            url = embed.url
+                            if url not in image_urls:
+                                image_urls.append(url)
+                                has_image = True
+                        # Check embed image for image URL
+                        if hasattr(embed, 'image') and embed.image and hasattr(embed.image, 'url'):
+                            url = embed.image.url
+                            if url not in image_urls:
+                                image_urls.append(url)
+                                has_image = True
+                        # Check embed footer icon for image URL
+                        if hasattr(embed, 'footer') and embed.footer and hasattr(embed.footer, 'icon_url'):
+                            url = embed.footer.icon_url
+                            if url and url not in image_urls:
+                                image_urls.append(url)
+                                has_image = True
+                
                 # Log image detection status for debugging
-                if attachments:
+                total_image_sources = len(attachments) + len(embeds)
+                if total_image_sources > 0:
                     logger.info(
                         f"[image_detection] Message {msg.id} by {author}: "
-                        f"{len(attachments)} total attachment(s), "
-                        f"{len(image_urls)} image(s): {image_urls}"
+                        f"{len(attachments)} attachment(s), {len(embeds)} embed(s), "
+                        f"{len(image_urls)} image URL(s): {image_urls}"
                     )
                 else:
                     logger.debug(
@@ -1587,3 +1737,26 @@ class DiscordBot:
             f"tool_max_tokens={tool_max_tokens}, tool_temperature={tool_temperature}, "
             f"final_max_tokens={final_max_tokens}, use_tool_calling={use_tool_calling}"
         )
+
+
+# Global bot instance reference for cross-module access
+_bot_instance = None
+
+
+def set_bot_instance(bot):
+    """Set the global bot instance reference.
+    
+    Args:
+        bot: DiscordBotCore instance
+    """
+    global _bot_instance
+    _bot_instance = bot
+
+
+def get_bot_instance():
+    """Get the global bot instance reference.
+    
+    Returns:
+        DiscordBotCore instance or None
+    """
+    return _bot_instance

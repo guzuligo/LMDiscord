@@ -180,9 +180,25 @@ class ChannelSearchTool(BaseTool):
                 )
 
             # Apply filters from kwargs
-            search_query = kwargs.get("search_query", "").strip().lower()
+            raw_search_query = kwargs.get("search_query", "").strip()
+            search_query = raw_search_query.lower() if raw_search_query else ""
             username_filter = kwargs.get("username", "").strip()
             compress_long = kwargs.get("compress_long", True)
+
+            # Recommendation 3: Reject queries shorter than 2 characters
+            if raw_search_query and len(raw_search_query) < 2:
+                return ToolResult(
+                    success=False,
+                    content="Error: search_query must be at least 2 characters long. Provide a more specific search term.",
+                    error="Query too short"
+                )
+
+            # Recommendation 5: When no filters are specified, reduce limit to avoid wasting tokens
+            # Return only the 5 most recent messages instead of fetching the full limit
+            if not search_query and not username_filter:
+                # Apply a reduced limit for unfiltered queries
+                effective_limit = min(5, len(messages) if messages else 5)
+                messages = messages[:effective_limit]
 
             # Apply search_query filter
             if search_query:

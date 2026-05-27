@@ -29,6 +29,7 @@ wheels/
 # Log files
 *.log
 app.log
+terminal.log
 
 # Virtual environments
 venv/

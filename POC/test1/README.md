@@ -37,6 +37,7 @@ Proof of Concept implementation for a Python desktop application with a GUI that
 - Configurable settings (temperature, max_tokens, delay, system prompt)
 - Safe image download with hostname whitelist
 - Token metrics streaming display
+- **Terminal Log (terminal.log)**: Auto-generated log file that mirrors ALL terminal output exactly (via stdout + stderr redirection), cleared on app startup for easy debugging sharing. Just tell me to check `terminal.log` and I can read it directly.
 
 ## Recent Features (5/14/2026 - UX-001)
 - **Server Config Auto-Discovery**: Added auto-discovery of Discord servers and channels
@@ -68,3 +69,11 @@ Proof of Concept implementation for a Python desktop application with a GUI that
 - ✅ LM Studio tool calling (end_session, image_describe)
 - ✅ Message queuing during processing
 - ✅ All BUG-002 fixes verified with live testing
+- ✅ Terminal log (terminal.log) auto-created and mirrors terminal output exactly (stdout + stderr)
+
+## Feature Requests
+### FEAT-003: Debug Mode Flag for Logging
+- **Problem**: Verbose DEBUG-level logs (discord.py HTTP traces, urllib3 connection details) appear on every startup even when not debugging
+- **Request**: Add `--debug` CLI flag or `DEBUG_MODE` config option to control logging verbosity
+  - Debug mode: `logging.basicConfig(level=logging.DEBUG)` — full verbose output
+  - Normal mode: `logging.basicConfig(level=logging.INFO)` — suppress library DEBUG output
