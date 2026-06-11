@@ -42,3 +42,6 @@ ENV/
 *.swp
 *.swo
 user/
+
+# Unit test directories
+POC/poc1/unittest/
