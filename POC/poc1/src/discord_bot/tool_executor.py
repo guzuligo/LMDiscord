@@ -132,6 +132,12 @@ class ToolCallHandler:
                 )
                 if result:
                     return result
+            elif func_name == "context_compress":
+                result = await self._handle_context_compress(
+                    func_args, messages_for_lm, tool_call_id, make_lm_call_func
+                )
+                if result:
+                    return result
             else:
                 tool_result = f"Unknown tool: {func_name}"
                 messages_for_lm.append({
@@ -214,6 +220,12 @@ class ToolCallHandler:
             elif func_name == "memory_tool":
                 result = await self._handle_memory_tool_active(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
+                )
+                if result:
+                    return result
+            elif func_name == "context_compress":
+                result = await self._handle_context_compress_active(
+                    func_args, messages_for_lm, tool_call_id, make_lm_call_func
                 )
                 if result:
                     return result
@@ -421,9 +433,14 @@ class ToolCallHandler:
         messages_for_lm: List[Dict],
         tool_call_id: str,
         safe_downloader: Any,
-        make_lm_call_func: Optional[Any] = None
+        make_lm_call_func: Optional[Any] = None,
+        check_pending: Optional[Any] = None
     ) -> Optional[str]:
-        """Handle image_describe tool call with base64 data (legacy variant)."""
+        """Handle image_describe tool call with base64 data (legacy variant).
+        
+        Args:
+            check_pending: Optional callable to check for pending messages (FEAT-008)
+        """
         image_description = None
         try:
             args = json.loads(func_args)
@@ -436,9 +453,23 @@ class ToolCallHandler:
                 raw_bytes = await safe_downloader.download_image(image_data)
                 logger.info(f"Downloaded {len(raw_bytes)} bytes from URL")
 
+                # Check for pending messages before processing (FEAT-008)
+                if check_pending:
+                    pending = await check_pending()
+                    if pending:
+                        logger.info("Pending message detected during image download, interrupting")
+                        return {"interrupted": True, "pending_message": pending}
+
                 from src.utils import resize_image_bytes, image_to_base64
                 compressed_bytes, output_mime = resize_image_bytes(raw_bytes, max_dimension=768, quality=85)
                 processed_base64 = image_to_base64(compressed_bytes)
+
+                # Check for pending messages before LM call (FEAT-008)
+                if check_pending:
+                    pending = await check_pending()
+                    if pending:
+                        logger.info("Pending message detected before mini-context LM call, interrupting")
+                        return {"interrupted": True, "pending_message": pending}
 
                 image_instruction = self._extract_last_user_message(messages_for_lm)
                 mini_context = self._build_mini_context(processed_base64, output_mime, image_instruction=image_instruction)
@@ -698,7 +729,7 @@ class ToolCallHandler:
 
             channel_display = channel if channel else "(all channels)"
             logger.info(f"[channel_search] Searching channel {channel_display} (limit={limit}, query='{search_query}')"
-                       f"{f', feedback={user_feedback[:60]}' if user_feedback else ''}")
+                        f"{f', feedback={user_feedback[:60]}' if user_feedback else ''}")
 
             if get_bot_instance is None:
                 logger.warning("[channel_search] No bot instance provided, returning error")
@@ -710,8 +741,24 @@ class ToolCallHandler:
                 messages_for_lm.append({"role": "tool", "tool_call_id": tool_call_id, "content": "Error: Bot not available"})
                 return
 
+            # Extract message_id and channel_id from args (from parsed Discord message link)
             message_id = args.get("message_id")
+            link_channel_id = args.get("channel_id")  # Original channel_id from the message link
 
+            # FALLBACK: If LM didn't provide message_id/channel_id but the user shared a link,
+            # extract them from conversation history (user messages contain Discord message links)
+            if not message_id or not link_channel_id:
+                extracted = self._extract_message_link_ids_from_history(messages_for_lm)
+                if extracted:
+                    mid, cid = extracted
+                    if not message_id and mid:
+                        message_id = mid
+                        logger.info(f"[channel_search] Extracted message_id={message_id} from conversation history (fallback)")
+                    if not link_channel_id and cid:
+                        link_channel_id = cid
+                        logger.info(f"[channel_search] Extracted channel_id={link_channel_id} from conversation history (fallback)")
+
+            # If message_id is provided, pass it to get_channel_messages for direct fetch
             result = await bot.get_channel_messages(
                 channel=str(channel),
                 limit=int(limit),
@@ -720,20 +767,34 @@ class ToolCallHandler:
                 compress_long=bool(compress_long),
                 offset=int(offset),
                 windows=int(windows),
+                message_id=int(message_id) if message_id else None,
+                link_channel_id=int(link_channel_id) if link_channel_id else None,
             )
 
             messages = result.get("messages", [])
             available_channels = result.get("available_channels", {})
 
-            if message_id and messages:
+            # If message_id was provided but get_channel_messages didn't fetch it,
+            # try fetching from the original channel_id from the link
+            if message_id and not any(m.get("id") == str(message_id) for m in messages):
                 try:
-                    target_channel_id = messages[0].get("channel_id") if messages else None
+                    # Use the original channel_id from the message link, NOT messages[0].get("channel_id")
+                    target_channel_id = int(link_channel_id) if link_channel_id else None
                     if target_channel_id:
-                        msg_data = await bot.get_message_by_id(int(target_channel_id), int(message_id))
+                        msg_data = await bot.get_message_by_id(target_channel_id, int(message_id))
                         if msg_data and msg_data.get("message"):
                             fetched_msg = msg_data["message"]
                             logger.info(f"[channel_search] Fetched message {message_id}: has_image={fetched_msg.get('has_image', False)}, image_urls={fetched_msg.get('image_urls', [])}")
                             messages.insert(0, fetched_msg)
+                    else:
+                        # Fallback: try from first matched message's channel (original behavior)
+                        target_channel_id = messages[0].get("channel_id") if messages else None
+                        if target_channel_id:
+                            msg_data = await bot.get_message_by_id(int(target_channel_id), int(message_id))
+                            if msg_data and msg_data.get("message"):
+                                fetched_msg = msg_data["message"]
+                                logger.info(f"[channel_search] Fetched message {message_id} (fallback): has_image={fetched_msg.get('has_image', False)}, image_urls={fetched_msg.get('image_urls', [])}")
+                                messages.insert(0, fetched_msg)
                 except Exception as e:
                     logger.warning(f"Failed to fetch message {message_id} for image URLs: {e}")
 
@@ -831,7 +892,129 @@ class ToolCallHandler:
         await self._handle_memory_tool(func_args, messages_for_lm, tool_call_id, get_bot_instance)
         return None
 
+    # --- context_compress ---
+
+    async def _handle_context_compress(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        make_lm_call_func: Optional[Any] = None
+    ) -> Optional[str]:
+        """Handle context_compress tool call (new session variant).
+        
+        Passes messages_for_lm and make_lm_call_func to the compressor for real LM-based summarization.
+        Replaces compressed messages in messages_for_lm with the summary.
+        """
+        try:
+            args = json.loads(func_args)
+            compress_before_index = args.get("compress_before_index", 0)
+            target_summary_length = args.get("target_summary_length", 300)
+            messages_to_keep_fresh = args.get("messages_to_keep_fresh", 6)
+
+            logger.info(f"[context_compress] Compressing messages before index {compress_before_index}")
+            logger.info(f"[context_compress] Conversation history size: {len(messages_for_lm)} messages")
+
+            from src.tools.builtins.context_compressor import ContextCompressorTool
+
+            compressor = ContextCompressorTool()
+            result = await compressor.execute(
+                compress_before_index=compress_before_index,
+                target_summary_length=target_summary_length,
+                messages_to_keep_fresh=messages_to_keep_fresh,
+                messages_for_lm=messages_for_lm,
+                make_lm_call_func=make_lm_call_func
+            )
+
+            if result.success:
+                # Replace compressed messages: remove all messages before compress_before_index
+                # and insert the summary as a single system message
+                summary_msg = {
+                    "role": "system",
+                    "content": f"[CONTEXT COMPRESSION]\n{result.content}"
+                }
+                
+                # Replace messages: remove old messages, keep fresh ones, add summary
+                fresh_messages = messages_for_lm[compress_before_index:]
+                new_messages = [summary_msg] + fresh_messages
+                
+                # Replace the entire messages_for_lm list content
+                messages_for_lm.clear()
+                messages_for_lm.extend(new_messages)
+                
+                logger.info(
+                    f"[context_compress] Compression successful: "
+                    f"{len(messages_for_lm)} messages (was {len(messages_for_lm) + compress_before_index}), "
+                    f"summary: {result.content[:100]}..."
+                )
+                return None
+            else:
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": result.error or result.message
+                })
+                return None
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing context_compress args: {e}")
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error: Invalid arguments for context_compress: {str(e)}"
+            })
+            return None
+        except Exception as e:
+            logger.error(f"Error in context_compress: {e}", exc_info=True)
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error during context compression: {str(e)}"
+            })
+            return None
+
+    async def _handle_context_compress_active(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        make_lm_call_func: Optional[Any] = None
+    ) -> Optional[Dict]:
+        """Handle context_compress tool call (active session variant)."""
+        await self._handle_context_compress(func_args, messages_for_lm, tool_call_id, make_lm_call_func)
+        return None
+
     # --- Helper Methods ---
+
+    @staticmethod
+    def _extract_message_link_ids_from_history(messages_for_lm: List[Dict]) -> Optional[tuple]:
+        """Extract message_id and channel_id from Discord message links in conversation history.
+        
+        Scans recent user messages for Discord message link patterns like:
+        - https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
+        - https://discordapp.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
+        
+        Returns:
+            Tuple of (message_id, channel_id) as strings, or None if not found.
+        """
+        # Discord message link pattern: guild_id/channel_id/message_id
+        pattern = r'(?:discord\.com|discordapp\.com)/channels/\d+/(\d+)/(\d+)'
+        
+        # Scan last 10 messages for Discord links
+        for msg in reversed(messages_for_lm[-10:]):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            
+            match = re.search(pattern, content)
+            if match:
+                channel_id = match.group(1)
+                message_id = match.group(2)
+                return (message_id, channel_id)
+        
+        return None
 
     def _build_mini_context(self, base64_data: str, mime_type: str, image_instruction: Optional[str] = None) -> List[Dict]:
         """Build mini-context for image description."""
@@ -940,7 +1123,11 @@ class ToolCallHandler:
                 f"\n\nPlease provide a concise summary of the key points, "
                 f"topics discussed, and any relevant information. "
                 f"Focus on facts, decisions, and actionable items. "
-                f"Keep the summary under 150 words.\n\n---\n{batch_text}"
+                f"Keep the summary under 150 words.\n\n"
+                f"IMPORTANT: You MUST provide a meaningful summary. "
+                f"If any messages contain image URLs, list them. "
+                f"If any messages contain important information, mention it. "
+                f"DO NOT return an empty summary.\n\n---\n{batch_text}"
             )
 
             mini_context = [{"role": "user", "content": summarization_prompt}]
@@ -956,11 +1143,16 @@ class ToolCallHandler:
                     summaries.append(f"--- Batch {len(summaries)+1} Summary ---\n{summary_stripped}")
                     logger.info(f"[channel_search] Batch {len(summaries)} summary content: {repr(summary_stripped[:300])}")
                 else:
-                    summaries.append(f"--- Batch {len(summaries)+1} Summary ---\n[No summary generated]")
-                    logger.warning(f"[channel_search] Batch {len(summaries)}: No choices in LM response")
+                    # BUG-SEARCH-005 FIX: LM returned no choices — fall back to direct formatting
+                    logger.warning(f"[channel_search] Batch {len(summaries)}: No choices in LM response, using fallback")
+                    fallback_summary = self._format_channel_search_direct(batch, search_query, user_feedback)
+                    summaries.append(f"--- Batch {len(summaries)+1} Summary (Fallback) ---\n{fallback_summary}")
             except Exception as e:
                 logger.error(f"[channel_search] Mini-context summarization failed for batch {len(summaries)+1}: {e}")
-                summaries.append(f"--- Batch {len(summaries)+1} Summary ---\n[Summarization error: {str(e)[:100]}]")
+                # BUG-SEARCH-005 FIX: Fall back to direct formatting when LM call fails
+                logger.info(f"[channel_search] Using fallback direct formatting for batch {len(summaries)+1}")
+                fallback_summary = self._format_channel_search_direct(batch, search_query, user_feedback)
+                summaries.append(f"--- Batch {len(summaries)+1} Summary (Fallback) ---\n{fallback_summary}")
 
         combined = "\n\n".join(summaries)
         final_result = (

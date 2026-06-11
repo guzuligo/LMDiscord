@@ -44,7 +44,17 @@ class Config:
             "tool_temperature": 0.3,
             "final_max_tokens": 8192,
             "use_tool_calling": True,
-            "max_tool_turns": 5
+            "max_tool_turns": 5,
+            "context_lm_max_tokens": 4096
+        },
+        "context_management": {
+            "compression": {
+                "token_threshold_percent": 80,
+                "message_count_threshold": 20,
+                "messages_to_keep_fresh": 6,
+                "default_summary_length": 300,
+                "enabled": True
+            }
         },
         "servers": {}
     }
@@ -468,7 +478,8 @@ class Config:
             "tool_temperature": tc.get("tool_temperature", 0.3),
             "final_max_tokens": tc.get("final_max_tokens", 8192),
             "use_tool_calling": tc.get("use_tool_calling", True),
-            "max_tool_turns": tc.get("max_tool_turns", 5)
+            "max_tool_turns": tc.get("max_tool_turns", 5),
+            "context_lm_max_tokens": tc.get("context_lm_max_tokens", 4096)
         }
 
     def set_tools_config(self, config: dict) -> None:
@@ -504,4 +515,103 @@ class Config:
         self._data.setdefault("memory_config", {})
         for key, value in config.items():
             self._data["memory_config"][key] = value
+        self.save()
+
+    # ====================================================================
+    # Context Management Configuration Properties
+    # ====================================================================
+
+    @property
+    def context_compression_enabled(self) -> bool:
+        """Get context compression enabled setting."""
+        return self.get("context_management", "compression", {}).get("enabled", True)
+
+    @context_compression_enabled.setter
+    def context_compression_enabled(self, value: bool) -> None:
+        """Set context compression enabled setting."""
+        self._data.setdefault("context_management", {})
+        self._data["context_management"]["compression"] = {
+            **self._data["context_management"].get("compression", {}),
+            "enabled": value
+        }
+        self.save()
+
+    @property
+    def context_compression_token_threshold(self) -> int:
+        """Get token threshold percentage for context compression trigger."""
+        return self.get("context_management", "compression", {}).get("token_threshold_percent", 80)
+
+    @context_compression_token_threshold.setter
+    def context_compression_token_threshold(self, value: int) -> None:
+        """Set token threshold percentage for context compression trigger."""
+        self._data.setdefault("context_management", {})
+        self._data["context_management"]["compression"] = {
+            **self._data["context_management"].get("compression", {}),
+            "token_threshold_percent": value
+        }
+        self.save()
+
+    @property
+    def context_compression_message_threshold(self) -> int:
+        """Get message count threshold for context compression trigger."""
+        return self.get("context_management", "compression", {}).get("message_count_threshold", 20)
+
+    @context_compression_message_threshold.setter
+    def context_compression_message_threshold(self, value: int) -> None:
+        """Set message count threshold for context compression trigger."""
+        self._data.setdefault("context_management", {})
+        self._data["context_management"]["compression"] = {
+            **self._data["context_management"].get("compression", {}),
+            "message_count_threshold": value
+        }
+        self.save()
+
+    @property
+    def context_compression_messages_to_keep_fresh(self) -> int:
+        """Get number of recent messages to keep uncompressed."""
+        return self.get("context_management", "compression", {}).get("messages_to_keep_fresh", 6)
+
+    @context_compression_messages_to_keep_fresh.setter
+    def context_compression_messages_to_keep_fresh(self, value: int) -> None:
+        """Set number of recent messages to keep uncompressed."""
+        self._data.setdefault("context_management", {})
+        self._data["context_management"]["compression"] = {
+            **self._data["context_management"].get("compression", {}),
+            "messages_to_keep_fresh": value
+        }
+        self.save()
+
+    @property
+    def context_compression_default_summary_length(self) -> int:
+        """Get default summary length for context compression."""
+        return self.get("context_management", "compression", {}).get("default_summary_length", 300)
+
+    @context_compression_default_summary_length.setter
+    def context_compression_default_summary_length(self, value: int) -> None:
+        """Set default summary length for context compression."""
+        self._data.setdefault("context_management", {})
+        self._data["context_management"]["compression"] = {
+            **self._data["context_management"].get("compression", {}),
+            "default_summary_length": value
+        }
+        self.save()
+
+    def get_context_management_config(self) -> dict:
+        """Get all context management configuration as a dict."""
+        cm = self._data.get("context_management", {})
+        return {
+            "compression": {
+                "token_threshold_percent": cm.get("compression", {}).get("token_threshold_percent", 80),
+                "message_count_threshold": cm.get("compression", {}).get("message_count_threshold", 20),
+                "messages_to_keep_fresh": cm.get("compression", {}).get("messages_to_keep_fresh", 6),
+                "default_summary_length": cm.get("compression", {}).get("default_summary_length", 300),
+                "enabled": cm.get("compression", {}).get("enabled", True)
+            }
+        }
+
+    def set_context_management_config(self, config: dict) -> None:
+        """Set context management configuration from a dict."""
+        self._data.setdefault("context_management", {})
+        for key, value in config.items():
+            self._data["context_management"][key] = value
         self.save()

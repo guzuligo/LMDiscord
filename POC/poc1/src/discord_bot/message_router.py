@@ -25,6 +25,55 @@ CDN_ATTACHMENT_PATTERN = re.compile(
     r'cdn\.discordapp\.com/attachments/(\d+)/(\d+)/'
 )
 
+# Regex pattern to extract Discord message jump links from message content
+# Supports both discord.com and discordapp.com domains
+# Pattern examples:
+#   https://discord.com/channels/123456789/123456789/987654321
+#   https://discordapp.com/channels/123456789/123456789/987654321
+#   https://discord.com/channels/@me/123456789/987654321  (DMs)
+#   https://discord.com/channels/@guild/123456789/987654321  (guild context)
+MESSAGE_LINK_PATTERN = re.compile(
+    r'discord(app)?\.com/channels/(?:@(?:me|guild)/|(\d+)/)(\d+)/(\d+)'
+)
+
+
+def _extract_message_ids_from_link(link: str) -> Optional[Tuple[int, int]]:
+    """Extract (channel_id, message_id) from a Discord message jump link.
+
+    Discord message jump links follow the pattern:
+    https://discord.com/channels/{guild_id}/{channel_id}/{message_id}
+    https://discord.com/channels/@me/{channel_id}/{message_id}  (DMs)
+    https://discord.com/channels/@guild/{channel_id}/{message_id}  (guild context)
+
+    For direct server channels (no @me/@guild), the first group is guild_id,
+    second is channel_id, third is message_id.
+
+    Args:
+        link: The Discord message URL or any string containing one.
+
+    Returns:
+        Tuple of (channel_id, message_id) or None if extraction fails.
+    """
+    if not link or not isinstance(link, str):
+        return None
+
+    match = MESSAGE_LINK_PATTERN.search(link)
+    if not match:
+        return None
+
+    # Groups:
+    # For https://discord.com/channels/123/456/789:
+    #   group(1) = guild_id (123), group(2) = channel_id (456), group(3) = message_id (789)
+    # For https://discord.com/channels/@me/456/789:
+    #   group(1) = None, group(2) = channel_id (456), group(3) = message_id (789)
+    channel_id_str = match.group(2)
+    message_id_str = match.group(3)
+
+    if channel_id_str and message_id_str:
+        return int(channel_id_str), int(message_id_str)
+
+    return None
+
 
 def _is_expired_cdn_url(url: str) -> bool:
     """Check if a CDN URL contains expired expiration parameters.
@@ -328,12 +377,101 @@ class MessageRouter:
 
         return attachments
 
-    async def _extract_images_from_message(self, message: Any) -> List[Dict]:
-        """Extract image URLs from a message's attachments and embeds without refreshing.
+    async def extract_images_from_message_links(
+        self,
+        message_content: str,
+        channel_id: int,
+        message: Any
+    ) -> List[Dict]:
+        """Extract image attachments from Discord message jump links in message content.
 
-        This is a lighter version of extract_image_attachments() used for referenced messages.
-        It extracts image URLs but does NOT refresh expired URLs — that's done separately
-        by _refresh_expired_image_urls() after extraction.
+        Parses Discord message URLs from the content, fetches each referenced message
+        via the Discord API, and extracts image attachments from them.
+
+        Args:
+            message_content: The raw message content that may contain Discord message links
+            channel_id: The current channel ID (used to find the guild for fetching messages)
+            message: The current Discord message object (used to access the guild)
+
+        Returns:
+            List of dicts with keys: url, filename, is_image
+        """
+        if not message_content or not isinstance(message_content, str):
+            return []
+
+        images = []
+        seen_message_ids = set()
+
+        # Find all Discord message links in the content
+        matches = MESSAGE_LINK_PATTERN.finditer(message_content)
+        for match in matches:
+            channel_id_str = match.group(3)
+            message_id_str = match.group(4)
+
+            if not channel_id_str or not message_id_str:
+                continue
+
+            target_channel_id = int(channel_id_str)
+            target_message_id = int(message_id_str)
+
+            # Skip if we already processed this message ID
+            if target_message_id in seen_message_ids:
+                continue
+            seen_message_ids.add(target_message_id)
+
+            try:
+                # Determine which channel to fetch from:
+                # If the link points to the current channel, use current channel
+                # Otherwise, try to find the channel in the guild
+                if target_channel_id == channel_id:
+                    fetch_channel = message.channel
+                else:
+                    # Try to get the channel from the guild
+                    guild = message.guild
+                    if guild:
+                        fetch_channel = guild.get_channel(target_channel_id)
+                    else:
+                        # DM message - try to get from client
+                        fetch_channel = message.client.get_channel(target_channel_id)
+
+                if fetch_channel is None:
+                    logger.debug(f"Could not find channel {target_channel_id} for message link")
+                    continue
+
+                if not hasattr(fetch_channel, 'fetch_message'):
+                    logger.debug(f"Channel {target_channel_id} does not support fetch_message")
+                    continue
+
+                # Fetch the referenced message
+                ref_msg = await fetch_channel.fetch_message(target_message_id)
+                if ref_msg is None:
+                    logger.warning(f"Message {target_message_id} not found in channel {target_channel_id}")
+                    continue
+
+                # Extract images from the referenced message using the full
+                # extract_image_attachments() which includes CDN URL refresh
+                # logic — critical for message links whose URLs may have
+                # expired since the original message was sent.
+                ref_images = await self.extract_image_attachments(ref_msg)
+                if ref_images:
+                    logger.info(f"Extracted {len(ref_images)} image(s) from message link (message {target_message_id})")
+                    images.extend(ref_images)
+
+            except discord.NotFound:
+                logger.warning(f"Message {target_message_id} not found (404) in channel {target_channel_id}")
+            except discord.Forbidden:
+                logger.warning(f"No permission to fetch message {target_message_id} in channel {target_channel_id}")
+            except Exception as e:
+                logger.warning(f"Error extracting images from message link (channel={target_channel_id}, msg={target_message_id}): {e}")
+
+        return images
+
+    async def _extract_images_from_message(self, message: Any) -> List[Dict]:
+        """DEPRECATED — Use extract_image_attachments() instead.
+
+        This method exists for backward compatibility but is no longer used
+        in the message link flow. The extract_image_attachments() method
+        provides the same functionality with added CDN URL refresh support.
 
         Args:
             message: Discord message object
@@ -449,7 +587,21 @@ class MessageRouter:
                 logger.info(f"⚠️ No config available, skipping channel filter for channel={channel_id}")
 
         # Extract image attachments from message (async - refreshes expired CDN URLs)
+        message_content = (message.content or "").strip()
         image_attachments = await self.extract_image_attachments(message)
+
+        # Extract images from Discord message jump links in message content
+        message_link_images = await self.extract_images_from_message_links(
+            message_content, channel_id, message
+        )
+        if message_link_images:
+            logger.info(f"Extracted {len(message_link_images)} image(s) from message links in content")
+            # Merge with existing image attachments (avoid duplicates by URL)
+            existing_urls = {a["url"] for a in image_attachments}
+            for img in message_link_images:
+                if img["url"] not in existing_urls:
+                    image_attachments.append(img)
+                    existing_urls.add(img["url"])
 
         # If processing, queue the message (active sessions only)
         if self._processing_lock.get(channel_id, False):

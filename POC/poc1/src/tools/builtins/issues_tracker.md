@@ -28,6 +28,18 @@
 
 ## Known Limitations & Bugs
 
+### ⚠️ DEPRECATED: Operator-Based Query Syntax (has:, from:, in:)
+
+| Field | Value |
+|-------|-------|
+| **ID** | DEPRECATED-001 |
+| **Date** | 2026-06-05 |
+| **Status** | ⚠️ **DEPRECATED** |
+| **Severity** | N/A |
+| **Description** | **DEPRECATED**: The operator-based query syntax (`has: image from: BotGuzu#3756`) was removed in favor of explicit boolean parameters. The `channel_search` tool now uses dedicated parameters: `has_image` (boolean), `has_link` (boolean), `has_file` (boolean), `has_video` (boolean), `has_audio` (boolean), `username` (string), `after_date` (string), `before_date` (string). See [solved_issues.md#bug-013-dep](../../solved_issues.md#bug-013-dep) for the deprecation details and migration guide. |
+
+---
+
 ### BUG-014 (channel_id): channel_search — LM Passes Channel Name Instead of Numeric ID
 
 | Field | Value |
@@ -139,6 +151,113 @@
 
 ---
 
+### 📋 BUG-CONTEXT-001: Context Compressor Tool Generates Placeholder Summary Instead of Real AI-Generated Summary
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CONTEXT-001 |
+| **Date** | 2026-06-10 |
+| **Status** | 🔴 **Confirmed Active** |
+| **Severity** | Critical |
+| **Description** | The `context_compress` tool is registered and wired into the bot's tool system, but it does NOT actually compress conversation messages. Instead, it generates a fake placeholder summary string without reading any conversation data. The LM Studio model CAN see the tool in its function calling list, but even when it calls the tool, the result contains no real summary of the conversation. |
+| **Root Cause** | `ContextCompressorTool.execute()` in `context_compressor.py` (lines 120-127) generates a static placeholder string without accessing the conversation history. The tool does NOT receive `messages_for_lm` (the conversation history) as a parameter, so it cannot read or compress any actual messages. |
+| **Tool Definition** | - **Tool Name**: `context_compress` - **Description**: "Compress old conversation messages into a compact summary to free up context window." - **Parameters**: `compress_before_index` (required), `target_summary_length` (default 300), `messages_to_keep_fresh` (default 6) |
+| **Where It's Wired** | 1. **Tool Registration**: `__init__.py` — `ContextCompressorTool` is imported and registered. 2. **System Prompt**: `message_handler.py` line 266 — LM is told to use `context_compress` when conversation history grows too large. 3. **Tool Handler**: `tool_executor.py` lines 848-913 (`_handle_context_compress`) and lines 905-913 (`_handle_context_compress_active`) — processes tool calls and appends result to `messages_for_lm`. 4. **Auto-Compression Config**: `message_handler.py` lines 146-150 — settings `context_compression_enabled`, `context_token_threshold`, `context_message_threshold` exist but are NEVER actually checked during message processing. |
+| **What's Missing** | 1. **Message Access**: The tool's `execute()` method does NOT receive the conversation history (`messages_for_lm`). 2. **Real Summarization**: The tool should send the messages to LM Studio for actual summarization. 3. **Message Replacement**: After compression, old messages should be replaced in `messages_for_lm` with the real summary. 4. **Auto-Trigger Logic**: The configured thresholds are never evaluated. |
+| **Expected Behavior** | 1. LM detects context is getting large (or user types `/summarize`). 2. LM calls `context_compress(compress_before_index=10, target_summary_length=300)`. 3. Tool receives messages 0-9 from conversation history. 4. Tool sends those messages to LM Studio for summarization. 5. Tool returns real summary. 6. `tool_executor.py` replaces messages 0-9 in `messages_for_lm` with the summary message. |
+| **Current Behavior** | 1. LM sees tool but may not call it (or calls it and gets useless result). 2. Tool returns placeholder: `[CONTEXT: Conversation history compressed at message index 10. Messages before this point have been summarized to save context space...]` 3. No actual conversation content is summarized. 4. No messages are removed from `messages_for_lm`. |
+| **Related Issues** | BUG-HANG-001 (context overload), BUG-HANG-003 (empty responses), BUG-013 (tool call loop), FEAT-008 (context management system) |
+| **Files To Modify** | `context_compressor.py` — Tool needs to accept `messages_for_lm` parameter and perform real summarization. `tool_executor.py` — `_handle_context_compress` needs to pass `messages_for_lm` to the tool and replace compressed messages. `message_processor.py` — Add auto-trigger logic to check context size and call compression. |
+| **Reference** | Full details in [../../issues_tracker.md#bug-context-001](../../issues_tracker.md#bug-context-001) |
+
+### 📋 BUG-SEARCH-005: Channel Search Batch Summaries Return Empty Content — LM Returns Empty Summaries
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-005 |
+| **Date** | 2026-06-10 |
+| **Status** | 🔴 **Confirmed Active — Terminal Log Evidence (2026-06-10 22:21)** |
+| **Severity** | Critical |
+| **Description** | The `channel_search` tool uses batched mini-context summarization for large result sets (15+ messages). When the LM model summarizes each batch, it returns **empty content** for all batches. The final combined result contains empty batch summaries with no actual message content. |
+| **Root Cause** | `_summarize_channel_search_batched()` in `tool_executor.py` sends messages to LM Studio with a summarization prompt, but the model returns empty content. The prompt may lack sufficient instruction for the model to produce meaningful summaries, or the message formatting may not provide enough context for the model to summarize effectively. |
+| **Evidence** | Terminal log (2026-06-10 22:21:14-32): ```Batch 1 summary content: ''``` ```Batch 2 summary content: ''``` ```Final combined result (183 chars): "📋 Channel Search Results (batch-summarized from 15 messages):\n\nSearch query: ''\n\n--- Batch 1 Summary ---\n\n\n--- Batch 2 Summary ---\n\n\nTotal messages searched: 15\n=== END OF RESULTS ==="``` |
+| **Flow Analysis** | 1. User sends a Discord message jump link. 2. Bot calls `channel_search` to find the referenced message. 3. 15 messages are fetched from the channel. 4. Messages exceed batch_size (10), so batched summarization is triggered. 5. Batch 1 (messages 1-10) → LM returns empty summary. 6. Batch 2 (messages 11-15) → LM returns empty summary. 7. Final result has empty summaries. 8. Bot has no useful data, reaches max tool calls. 9. Force-response gives "I couldn't find that specific message..." |
+| **Impact** | When batched summarization is used, the tool returns completely empty summaries. The LM then has no information to work with, leading to unhelpful responses. This directly causes the "Max tool calls (3) reached" issue because the LM re-calls `channel_search` trying to get better results, but each attempt also returns empty summaries. |
+| **Related Issues** | BUG-SEARCH-003, BUG-SEARCH-004, BUG-013, BUG-HANG-003, FEATURE-REQUEST-001 |
+
+---
+
+### 📋 BUG-SEARCH-006: Max Tool Calls (3) Reached Prematurely — Force-Response Has No Useful Data
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-006 |
+| **Date** | 2026-06-10 |
+| **Status** | 🔴 **Confirmed Active — Terminal Log Evidence (2026-06-10 22:21)** |
+| **Severity** | Critical |
+| **Description** | `MAX_TOOL_CALLS_PER_SESSION` is set to 3, which is too low for batched summarization workflows. The sequence is: Turn 1: `channel_search` tool call → empty summary. Turn 2: `channel_search` retry → empty summary. Turn 3: Another tool call → max reached → force-response triggered. The force-response prompt adds a user hint but does NOT include the actual (empty) tool results, so the LM has nothing meaningful to respond with. |
+| **Root Cause** | Two issues combined: (1) `MAX_TOOL_CALLS_PER_SESSION = 3` is too low for batched summarization which requires 2+ LM calls just for the summarization step. (2) When max is reached, the force-response mechanism adds a hint message but doesn't inject the tool results into the conversation, leaving the LM without data to form a response. |
+| **Evidence** | Terminal log (2026-06-10 22:21:32): ```Max tool calls (3) reached for channel 1503498074851508476, forcing response``` ```Making final response call after max tool calls for channel 1503498074851508476``` ```Final response obtained: "I couldn't find that specific message in the channel. It might have been deleted, or I might not have access to it. Could you share what's in that message, or check if the link is correct?"``` |
+| **Expected Behavior** | (1) Increase `MAX_TOOL_CALLS_PER_SESSION` to at least 8-10 to accommodate batched summarization. (2) When max is reached, inject the actual tool results (even if empty) into the conversation so the LM can form a meaningful response like "The search found 15 messages but I couldn't extract the specific one you're looking for." |
+| **Proposed Fix** | **Option A (Recommended)**: Increase `MAX_TOOL_CALLS_PER_SESSION` from 3 to 10. **Option B**: Keep max at 3 but implement the tool result injection mechanism from BUG-014's proposed fix. **Option C**: Both — increase max AND implement result injection for robustness. |
+| **Files To Modify** | `src/discord_bot/message_processor.py` → `MAX_TOOL_CALLS_PER_SESSION` constant, force-response mechanism |
+
+---
+
+### ✅ BUG-IMG-002: Message Links in Content Do Not Trigger Image Extraction — Bot Cannot Describe Images from Jump Links
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-IMG-002 |
+| **Date** | 2026-06-10 |
+| **Status** | ✅ **Resolved** |
+| **Severity** | High |
+| **Description** | When a user sends a Discord message jump link (e.g., `https://discordapp.com/channels/1502926835862863944/1503498099081871470/1508736219281096804`) embedded in the message content, the bot fails to extract and describe the image referenced by that message. The bot responds with "I couldn't pull up the actual image from it directly!" instead of analyzing the image. |
+| **Root Cause** | `message_router.py` only extracts images from: (1) direct message attachments (`message.attachments`), (2) message embeds (`message.embeds`), and (3) replied-to messages (`message.reference`). There is NO code to parse Discord message jump links from `message.content` text. |
+| **Resolution** | Added `extract_images_from_message_links()` method in `message_router.py` that: (1) Parses Discord message URLs from `message.content` using `MESSAGE_LINK_PATTERN` regex. (2) Fetches each referenced message via `channel.fetch_message(message_id)`. (3) Extracts image attachments from the referenced message using `_extract_images_from_message()`. (4) Merges extracted images with existing `image_attachments` in `handle_on_message()`. |
+| **Files Modified** | ✅ `src/discord_bot/message_router.py` — Added `extract_images_from_message_links()` method, integrated call in `handle_on_message()` before session processing. |
+| **Related Issues** | BUG-IMG-001 (image_describe consolidation), BUG-014 (embeds), BUG-SEARCH-003, BUG-SEARCH-004 |
+
+---
+
+### ✅ BUG-MEMORY-001: Datetime Comparison Error — "can't compare offset-naive and offset-aware datetimes"
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-MEMORY-001 |
+| **Date** | 2026-06-10 |
+| **Status** | ✅ **Resolved** |
+| **Severity** | High |
+| **Description** | When `channel_search` attempts to fetch recent messages, it fails with `TypeError: can't compare offset-naive and offset-aware datetimes`. This error occurs in `memory_callbacks.py` when filtering messages by time. The bot falls back to `channel_search` with empty query which searches only the current channel's recent messages, missing the target message from the jump link. |
+| **Root Cause** | `memory_callbacks.py` line 154 uses `datetime.utcnow()` which returns an **offset-naive** datetime (no timezone info). Line 161 compares this against `msg.created_at` which is an **offset-aware** datetime (Discord.py message objects include timezone info). Python 3 raises TypeError when comparing naive vs aware datetimes. |
+| **Resolution** | Replaced `datetime.utcnow()` with `datetime.now(timezone.utc)` in `memory_callbacks.py` line 154. Added `timezone` import to the datetime import statement. |
+| **Files Modified** | ✅ `src/discord_bot/memory_callbacks.py` — Line 154: `datetime.utcnow()` → `datetime.now(timezone.utc)`. Line 149: Added `timezone` to import. |
+| **Related Issues** | BUG-IMG-002, BUG-SEARCH-003, BUG-SEARCH-004 |
+
+---
+
+## Feature Requests
+
+### 📋 FEATURE-REQUEST-001: channel_search Incremental Processing with Context Window Protection
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEATURE-REQUEST-001 |
+| **Date** | 2026-06-05 |
+| **Status** | 📋 **Feature Request** |
+| **Priority** | High |
+| **Type** | Enhancement |
+| **Description** | The `channel_search` tool currently returns ALL matching results at once, which can rapidly fill the LLM context window when searching channels with many messages. This causes token limit errors and degrades response quality. The tool needs to support **incremental/batched processing** with **external state management** and **two-phase summarization** to prevent context overflow. |
+| **Problem Details** | 1. **No incremental processing**: The tool fetches and returns all messages in a single response, filling the context window. 2. **No context window protection**: There is no mechanism to limit the number of tokens sent to the LLM per tool call. 3. **No external state**: Search state (offset, batch index, accumulated results) is not stored externally — it relies entirely on conversation history. 4. **No two-phase processing**: There is no separate "summary context" for processing aggregated results before sending final findings to the main bot. 5. **Token limit exhaustion**: When searching large channels or using wide queries, the context window fills with raw message data, causing the LLM to hit token limits before it can produce a useful response. |
+| **Proposed Architecture** | **Phase 1 — Batched Search with External State:** SearchState class to store results per session with window_index, total_windows, accumulated_summary, results, image_urls, needs_more_detail. **Phase 2 — Incremental Processing:** return_summary parameter for compact summary-only mode, offset parameter for pagination, two-phase flow (summary first, detail on demand). **Phase 3 — Context Window Protection:** max_context_tokens parameter, auto-truncate long messages, compress_long by default. |
+| **Required Changes** | 1. `channel_search.py`: Add `return_summary` boolean parameter, add `window_size` parameter. 2. `tool_executor.py`: Create SearchState class, manage state lifecycle, extract image URLs separately. 3. `message_handler.py`: Add max_context_tokens limit, auto-truncate long content. |
+| **Expected Behavior** | Before: channel_search(query="test") → returns 50 messages → context window full → token limit error. After: channel_search(query="test") → returns summary + image URLs → context preserved → on demand: channel_search(query="test", offset=10) → returns next 10 detailed messages. |
+| **Testing Requirements** | Unit tests for batched search, summary mode, offset pagination, external state management, context window protection. Integration tests for two-phase processing flow. |
+| **Files To Modify** | `src/tools/builtins/channel_search.py`, `src/discord_bot/tool_executor.py`, `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py` |
+| **Related Issues** | BUG-SEARCH-003, BUG-SEARCH-004, BUG-013, BUG-015, BUG-HANG-001 |
+
+---
+
 ## Implemented Enhancements
 
 ### ✅ CONCEPT-004: Channel Search Sliding Window
@@ -154,4 +273,21 @@
 
 ---
 
-*Last updated: 2026-06-04*
+### ✅ FEATURE-CTX-001: Context Compression / Auto-Context-Compressor
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEATURE-CTX-001 |
+| **Date** | 2026-06-09 |
+| **Status** | ✅ Implemented (2026-06-09) |
+| **Description** | Add automatic context compression to prevent context window overflow errors. When conversation history exceeds configurable thresholds, old messages are compressed into a summary to free up context space. |
+| **Implementation Details** | **New Tool**: `context_compressor.py` — `ContextCompressorTool` that allows the LM to manually compress conversation history. **Auto-Trigger**: `MessageProcessor` monitors conversation history size and token estimates, automatically compressing when thresholds are exceeded. **Configuration**: Six new settings in tools config: `context_compression_enabled` (boolean), `context_token_threshold` (int, default 80%), `context_message_threshold` (int, default 20 messages), `context_messages_to_keep_fresh` (int, default 6), `context_summary_length` (int, default 300 chars). |
+| **Configuration UI** | New "Context Compression" section in Tools Settings tab with enable/disable toggle, token threshold slider (0-100%), message threshold input, messages to keep fresh input, and summary length input. |
+| **System Prompt Integration** | System prompt includes `context_compress` tool description with instructions on when to call it. |
+| **Wiring** | Context settings flow: `app.py` → `bot_core.py.apply_tools_config()` → `message_handler.apply_tools_config()` → `message_processor.apply_tools_config()`. |
+| **Files Modified** | ✅ `context_compressor.py` (new), ✅ `tool_executor.py`, ✅ `bot_core.py`, ✅ `config.py`, ✅ `message_handler.py`, ✅ `message_processor.py`, ✅ `index.html`, ✅ `script.js`, ✅ `app.py` |
+| **Unit Tests** | ✅ `test_context_compressor.py` — 30 tests covering tool definition, execute behavior, parameter validation, and LM Studio integration. All 30 tests pass. |
+
+---
+
+*Last updated: 2026-06-09*

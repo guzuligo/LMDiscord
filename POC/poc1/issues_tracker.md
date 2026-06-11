@@ -45,6 +45,7 @@
 - [HANG-001](solved_issues.md#hang-001): NameError — undefined 'timeout' variable in bot_core.py ✅
 - [FIX-HANG-001](solved_issues.md#fix-hang-001): N+1 Query Fix + max_tool_calls Enforcement ✅
 - [BUG-016](solved_issues.md#bug-016): LM Studio Model Loading Error Leaks Internal Details ✅
+- [BUG-LM-001](solved_issues.md#bug-lm-001): LM Studio Error Handler Crashes on Non-Standard Error Response Structure ✅
 
 ### Image Processing
 - [BUG-002](solved_issues.md#bug-002): Image Describe Breaks Conversation Flow & Causes 400 Errors ✅
@@ -520,6 +521,21 @@
 
 ---
 
+### ✅ BUG-CONTEXT-001: Context Compressor Tool Generates Placeholder Summary Instead of Real AI-Generated Summary
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CONTEXT-001 |
+| **Date** | 2026-06-10 |
+| **Status** | ✅ **FIXED** (2026-06-10) |
+| **Severity** | Critical |
+| **Description** | The `context_compress` tool is registered and wired into the bot's tool system, but it does NOT actually compress conversation messages. Instead, it generates a fake placeholder summary string without reading any conversation data. |
+| **Root Cause** | `ContextCompressorTool.execute()` in `src/tools/builtins/context_compressor.py` generated a static placeholder string without accessing the conversation history. The tool did NOT receive `messages_for_lm` (the conversation history) as a parameter. |
+| **Fix Applied** | 1. **context_compressor.py**: `ContextCompressorTool.execute()` now accepts `messages_for_lm` parameter and sends pre-compression messages to LM Studio for real summarization. 2. **tool_executor.py**: `_handle_context_compress()` passes `messages_for_lm` to the compressor and replaces compressed messages with the summary. 3. **message_processor.py**: Auto-trigger logic checks context size (token threshold + message count) after each turn. 4. **message_handler.py**: `_check_and_trigger_compression()` evaluates thresholds and triggers compression when needed. 5. **memory_callbacks.py**: Session start context initialization added — fetches recent channel messages and injects into system prompt. 6. **tool_executor.py**: Mini-context handover fixed — `check_pending` support added to legacy image describe methods. |
+| **Files Modified** | `src/tools/builtins/context_compressor.py`, `src/discord_bot/tool_executor.py`, `src/discord_bot/message_processor.py`, `src/discord_bot/message_handler.py`, `src/discord_bot/memory_callbacks.py` |
+
+---
+
 ### 📋 BUG-SEARCH-004: image_urls Present in channel_search Results But Not Passed to Main Bot Conversation
 
 | Field | Value |
@@ -539,13 +555,34 @@
 
 ## Planned Enhancements
 
-### ⏳ FEAT-008: Context Management System — Channel Search, Session Start Context, Context Compression
+### 📋 FEATURE-REQUEST-001: channel_search Incremental Processing with Context Window Protection
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEATURE-REQUEST-001 |
+| **Date** | 2026-06-05 |
+| **Status** | 📋 **Feature Request** |
+| **Priority** | High |
+| **Type** | Enhancement |
+| **Description** | The `channel_search` tool currently returns ALL matching results at once, which can rapidly fill the LLM context window when searching channels with many messages. This causes token limit errors and degrades response quality. The tool needs to support **incremental/batched processing** with **external state management** and **two-phase summarization** to prevent context overflow. |
+| **Problem Details** | 1. **No incremental processing**: The tool fetches and returns all messages in a single response, filling the context window. 2. **No context window protection**: There is no mechanism to limit the number of tokens sent to the LLM per tool call. 3. **No external state**: Search state (offset, batch index, accumulated results) is not stored externally — it relies entirely on conversation history. 4. **No two-phase processing**: There is no separate "summary context" for processing aggregated results before sending final findings to the main bot. 5. **Token limit exhaustion**: When searching large channels or using wide queries, the context window fills with raw message data, causing the LLM to hit token limits before it can produce a useful response. |
+| **Proposed Architecture** | **Phase 1 — Batched Search with External State:** SearchState class to store results per session with window_index, total_windows, accumulated_summary, results, image_urls, needs_more_detail. **Phase 2 — Incremental Processing:** return_summary parameter for compact summary-only mode, offset parameter for pagination, two-phase flow (summary first, detail on demand). **Phase 3 — Context Window Protection:** max_context_tokens parameter, auto-truncate long messages, compress_long by default. |
+| **Required Changes** | 1. `channel_search.py`: Add `return_summary` boolean parameter, add `window_size` parameter. 2. `tool_executor.py`: Create SearchState class, manage state lifecycle, extract image URLs separately. 3. `message_handler.py`: Add max_context_tokens limit, auto-truncate long content. |
+| **Expected Behavior** | Before: channel_search(query="test") → returns 50 messages → context window full → token limit error. After: channel_search(query="test") → returns summary + image URLs → context preserved → on demand: channel_search(query="test", offset=10) → returns next 10 detailed messages. |
+| **Testing Requirements** | Unit tests for batched search, summary mode, offset pagination, external state management, context window protection. Integration tests for two-phase processing flow. |
+| **Files To Modify** | `src/tools/builtins/channel_search.py`, `src/discord_bot/tool_executor.py`, `src/discord_bot/bot_core.py`, `src/discord_bot/message_handler.py` |
+| **Related Issues** | BUG-SEARCH-003, BUG-SEARCH-004, BUG-013, BUG-015, BUG-HANG-001 |
+| **Full Details** | See [src/tools/builtins/issues_tracker.md#feature-request-001](src/tools/builtins/issues_tracker.md#feature-request-001) |
+
+---
+
+### ✅ FEAT-008: Context Management System — Channel Search, Session Start Context, Context Compression
 
 | Field | Value |
 |-------|-------|
 | **ID** | FEAT-008 |
 | **Date** | 2026-05-21 |
-| **Status** | ⏳ Planned |
+| **Status** | ✅ **IMPLEMENTED** (2026-06-10) |
 | **Severity** | Medium |
 | **Description** | Implement a system that enables the Main Bot to manage conversation context efficiently. Three interconnected features: |
 
@@ -556,22 +593,35 @@
 - **Behavior**: Skips bot's own messages, truncates long messages to 200 chars, includes full referenced message for replies
 - **File**: `src/tools/builtins/channel_search.py`
 
-#### Feature 2: Session Start Context Initialization
-- **Purpose**: Before starting a new session, generate a compact summary of recent channel activity
-- **Flow**: ChannelSearch → LM summarize → Inject `[CHANNEL CONTEXT: ...]` into conversation history
-- **LM System prompt**: "You are a conversation summarizer. Summarize who is talking to whom, what topics are discussed, and what is resolved vs ongoing."
-- **Output format**: `[CHANNEL CONTEXT: <summary>]` (~300 chars max)
-- **Trigger**: Always at session start
-- **File**: `bot_core.py` → `_handle_new_session_message()` (modified)
+#### Feature 2: Session Start Context Initialization ✅ IMPLEMENTED
+- **Purpose**: Before starting a new session, inject recent channel activity as context
+- **Flow**: Fetch recent channel messages → Format as readable list → Inject into system prompt
+- **Implementation**: `memory_callbacks.py` → `_fetch_recent_channel_context()` fetches last 10 messages from channel history (24-hour cutoff)
+- **Output format**: `📋 [RECENT CHANNEL CONTEXT: Last N messages]` with numbered message list
+- **Trigger**: Always at session start, before wake-up memory
+- **File**: `src/discord_bot/memory_callbacks.py` → `_fetch_recent_channel_context()` method
+- **Behavior**: 
+  1. Fetches last 10 messages from Discord channel (skips bot's own messages)
+  2. Filters to last 24 hours only
+  3. Truncates messages to 300 chars
+  4. Includes `[media]` indicator for messages with attachments
+  5. Combined with wake-up memory into system prompt
 
-#### Feature 3: Context Compression Tool
+#### Feature 3: Context Compression Tool ✅ IMPLEMENTED
 - **Purpose**: Compress old conversation messages into a compact summary when conversation grows too long
-- **Tool**: `context_compress(compress_before_message_index, target_summary_length)`
-- **Auto-trigger**: Token consumption >80% OR message count >20
+- **Tool**: `context_compress(compress_before_index, target_summary_length, messages_to_keep_fresh)`
+- **Auto-trigger**: Token consumption >80% OR message count >20 (implemented in `message_processor.py`)
 - **Manual trigger**: Bot calls when it "feels like it" (via LM judgment)
-- **Compression**: Keep last 6 messages fresh, summarize the rest
-- **Output format**: `[CONTEXT: <summary>]` (~300 chars)
+- **Compression**: Keep last 6 messages fresh, summarize the rest using LM-based summarization
+- **Output format**: `[CONTEXT COMPRESSION]` system message replacing compressed messages
 - **File**: `src/tools/builtins/context_compressor.py`
+- **Real LM Summarization**: Uses LM Studio to generate actual summaries (not placeholders)
+- **Implementation Details**:
+  - `context_compressor.py` → `ContextCompressorTool.execute()` accepts `messages_for_lm` parameter
+  - Sends pre-compression messages to LM Studio for real summarization
+  - `tool_executor.py` → `_handle_context_compress()` replaces compressed messages with summary
+  - `message_processor.py` → Auto-trigger checks context size after each turn
+  - `message_handler.py` → `_check_and_trigger_compression()` evaluates thresholds
 
 #### Configuration
 ```json
@@ -600,11 +650,14 @@
 | Auto-trigger or bot-decided? | Both — auto on thresholds, bot can also decide | Auto ensures reliability, bot handles nuance |
 | LM-generated or rule-based summary? | LM-generated | Too complex for rule-based effectively |
 
-#### Implementation Plan
-1. Channel Search Tool (foundation — no LM call needed)
-2. Session Start Context Initialization (uses ChannelSearchTool)
-3. Context Compression Tool (LM-based summarization)
-4. Integration: update system prompt, test full flow
+#### Implementation Status (Updated 2026-06-10)
+1. ✅ Channel Search Tool (foundation — completed previously)
+2. ✅ Session Start Context Initialization (implemented in `memory_callbacks.py`)
+3. ✅ Context Compression Tool (LM-based summarization completed in `context_compressor.py`, auto-trigger added to `message_processor.py`)
+4. ✅ Integration: system prompt updated, mini-context handover fixed in `tool_executor.py`
+5. ✅ BUG-CONTEXT-001: context_compressor.py now uses real LM-based summarization
+6. ✅ BUG-CONTEXT-002: tool_executor.py passes `messages_for_lm` to compressor
+7. ✅ Mini-context handover: `check_pending` support added to legacy image describe methods
 
 #### Files Created
 - `src/tools/builtins/channel_search.py`
@@ -637,6 +690,140 @@
 ---
 
 ### ✅ CONCEPT-004: Channel Search Sliding Window — IMPLEMENTED (2026-06-04)
+
+---
+
+### ⚠️ DEPRECATED: FEAT-SEARCH-001: Discord-Style Search Operators (has:, from:, in:) — DEPRECATED
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-SEARCH-001 |
+| **Date** | 2026-06-05 |
+| **Status** | ⚠️ **DEPRECATED** (Replaced by explicit boolean parameters) |
+| **Severity** | N/A |
+| **Description** | **DEPRECATED**: The operator-based query syntax (`has: image from: BotGuzu#3756`) was deprecated in favor of explicit boolean parameters. The `channel_search` tool now uses dedicated parameters: `has_image` (boolean), `has_link` (boolean), `has_file` (boolean), `username` (string), `after_date` (string), `before_date` (string). See [BUG-013](solved_issues.md#bug-013-dep) for the deprecation details and migration guide. |
+
+#### Supported Operators
+
+| Operator | Purpose | Filter Logic |
+|----------|---------|--------------|
+| `has: image` | Messages with image attachments | `msg["has_image"] == True` |
+| `has: link` | Messages with embeds/links | `len(msg.get("embeds", [])) > 0` (requires adding `has_embeds` field) |
+| `has: file` | Messages with any attachment | `len(msg.get("attachments", [])) > 0` |
+| `from: username` | Messages from specific author | Match against `msg["author"]` or `msg["display_name"]` |
+| `in: channel` | Messages in specific channel | (Already handled by `channel` param, but should be parseable from query) |
+
+#### Parsing Behavior
+
+The `search_query` string is parsed for operator patterns using regex:
+```python
+import re
+OPERATOR_PATTERN = re.compile(r'(has|from|in|after|before):\s*(\S+)', re.IGNORECASE)
+```
+
+Examples:
+| Query | Parsed Operators | Remaining Text Filter |
+|-------|-----------------|----------------------|
+| `has: image` | `{"has": "image"}` | `""` |
+| `has: image from: BotGuzu` | `{"has": "image", "from": "BotGuzu"}` | `""` |
+| `has: image from: @general mannequin` | `{"has": "image", "from": "@general"}` | `"mannequin"` |
+| `mannequin` | `{}` | `"mannequin"` |
+
+#### Implementation Plan
+
+1. **Add `has_embeds` field to `_format_message()` in `bot_core.py`** — Track whether a message has embeds (for `has: link` support)
+2. **Create operator parser function** in `channel_search.py` — Extract operators from `search_query`
+3. **Apply operator filters** in `channel_search.py` `execute()` method — Filter messages based on parsed operators
+4. **Apply `from:` filter in `bot_core.py`** `get_channel_messages()` — For server-side filtering efficiency
+5. **Update tool description** — Document the new operator syntax in `channel_search.py` parameters
+
+#### Example Usage After Implementation
+
+```
+# Find all images from a specific user
+channel_search(search_query="has: image from: BotGuzu")
+
+# Find images with a keyword in a specific channel
+channel_search(search_query="has: image from: @general mannequin")
+
+# Find messages with any attachments
+channel_search(search_query="has: file")
+
+# Combine text search with author filter
+channel_search(search_query="from: BotGuzu mannequin")
+```
+
+#### Files To Modify
+- `src/discord_bot/bot_core.py` → `_format_message()` (add `has_embeds` field)
+- `src/tools/builtins/channel_search.py` → `execute()` (add operator parser + filter logic)
+- `src/discord_bot/bot_core.py` → `get_channel_messages()` (add operator parsing for server-side filtering)
+
+---
+
+### ⏳ FEAT-SEARCH-002: Date Range Filtering (after:, before:)
+
+| Field | Value |
+|-------|-------|
+| **ID** | FEAT-SEARCH-002 |
+| **Date** | 2026-06-05 |
+| **Status** | ⏳ Planned |
+| **Severity** | Medium |
+| **Description** | Discord's native search supports date range filtering using `after: timestamp` and `before: timestamp` operators. The bot's `channel_search` tool currently has no date filtering capability. This would allow users to search for messages within a specific time range, similar to Discord's native search. |
+
+#### Supported Operators
+
+| Operator | Purpose | Format | Example |
+|----------|---------|--------|---------|
+| `after: timestamp` | Messages after a date | ISO 8601 or Discord timestamp | `after: 2026-06-01` or `after: 2026-06-01T00:00:00Z` |
+| `before: timestamp` | Messages before a date | ISO 8601 or Discord timestamp | `before: 2026-06-05` or `before: 2026-06-05T23:59:59Z` |
+
+#### Implementation Plan
+
+1. **Add date parsing helper** in `channel_search.py` — Parse ISO 8601 date strings and Discord snowflake timestamps
+2. **Apply date filters in `bot_core.py`** `get_channel_messages()` — Pass `after`/`before` to Discord API's `channel.history(after=, before=)` which natively supports datetime objects
+3. **Apply date filters in `channel_search.py`** `execute()` — Client-side filtering as a fallback when messages are already fetched
+4. **Update tool description** — Document the date operator syntax
+
+#### Discord API Native Support
+
+The Discord.py library natively supports date filtering via `channel.history()`:
+```python
+from datetime import datetime
+
+# After a specific date
+after_date = datetime(2026, 6, 1, tzinfo=timezone.utc)
+async for msg in channel.history(after=after_date, limit=100):
+    ...
+
+# Before a specific date
+before_date = datetime(2026, 6, 5, tzinfo=timezone.utc)
+async for msg in channel.history(before=before_date, limit=100):
+    ...
+
+# Both (date range)
+async for msg in channel.history(after=after_date, before=before_date, limit=100):
+    ...
+```
+
+#### Example Usage After Implementation
+
+```
+# Find images from a specific user in June 2026
+channel_search(search_query="has: image from: BotGuzu after: 2026-06-01 before: 2026-07-01")
+
+# Find all messages from a channel last week
+channel_search(search_query="from: @general after: 2026-05-29")
+
+# Combine with text search
+channel_search(search_query="mannequin after: 2026-06-01 before: 2026-06-05")
+```
+
+#### Files To Modify
+- `src/discord_bot/bot_core.py` → `get_channel_messages()` (add `after`/`before` datetime params, pass to `_fetch_channel_history()`)
+- `src/discord_bot/bot_core.py` → `_fetch_channel_history()` (accept `after`/`before` datetime params)
+- `src/tools/builtins/channel_search.py` → `execute()` (add date operator parsing, pass to bot layer)
+- `src/discord_bot/tool_executor.py` → pass date params through to bot layer
+
 
 | Field | Value |
 |-------|-------|

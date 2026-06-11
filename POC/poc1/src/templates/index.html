@@ -337,6 +337,57 @@
                     </div>
                 </div>
 
+                <!-- Context Compression Settings -->
+                <div class="server-settings-grid" style="margin-bottom: 16px;">
+                    <div class="server-section-title" style="margin-bottom: 12px; color: var(--text-primary);">
+                        🗜️ Context Compression
+                    </div>
+                    <div class="server-setting-item">
+                        <label class="server-setting-label">
+                            <input type="checkbox" id="contextCompressionEnabled" checked>
+                            <span>Enable Auto-Compression</span>
+                        </label>
+                        <span class="server-setting-desc">Automatically compress conversation history when it grows too large.</span>
+                    </div>
+                    <div class="server-setting-item">
+                        <label class="server-setting-label">
+                            Token Threshold: <span id="contextTokenThresholdValue">80</span>%
+                        </label>
+                        <input type="range" id="contextTokenThreshold" min="50" max="95" value="80" step="5"
+                               oninput="document.getElementById('contextTokenThresholdValue').textContent=this.value"
+                               style="width: 100%;">
+                        <span class="server-setting-desc">Trigger compression when context reaches this percentage. (Default: 80%)</span>
+                    </div>
+                    <div class="server-setting-item">
+                        <label class="server-setting-label">
+                            Message Count Threshold: <input type="number" id="contextMessageThreshold" value="20" min="5" max="50" step="1"
+                             style="width: 70px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary); color: var(--text-primary);">
+                        </label>
+                        <span class="server-setting-desc">Trigger compression when conversation has this many messages. (Default: 20)</span>
+                    </div>
+                    <div class="server-setting-item">
+                        <label class="server-setting-label">
+                            Messages to Keep Fresh: <input type="number" id="contextMessagesToKeepFresh" value="6" min="2" max="15" step="1"
+                             style="width: 70px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary); color: var(--text-primary);">
+                        </label>
+                        <span class="server-setting-desc">Number of recent messages to keep uncompressed. (Default: 6)</span>
+                    </div>
+                    <div class="server-setting-item">
+                        <label class="server-setting-label">
+                            Summary Length: <input type="number" id="contextSummaryLength" value="300" min="100" max="1000" step="50"
+                             style="width: 70px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary); color: var(--text-primary);">
+                        </label>
+                        <span class="server-setting-desc">Target character length for the compressed summary. (Default: 300)</span>
+                    </div>
+                    <div class="server-setting-item">
+                        <label class="server-setting-label">
+                            LM Max Tokens: <input type="number" id="contextLmMaxTokens" value="4096" min="512" max="32768" step="128"
+                             style="width: 70px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary); color: var(--text-primary);">
+                        </label>
+                        <span class="server-setting-desc">Maximum tokens for LM Studio summarization calls. Use 4096+ for reasoning models. (Default: 4096)</span>
+                    </div>
+                </div>
+
                 <!-- Save Button -->
                 <div class="server-form-actions" style="margin-top: 20px;">
                     <button class="btn btn-primary" onclick="saveToolsConfig()">💾 Save Tools Configuration</button>

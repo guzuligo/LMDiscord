@@ -6,26 +6,32 @@ It enables LM Studio to fetch channel history for context building,
 search/filtering, and conversation compression.
 
 Key Responsibilities:
-- Accept channel_id, limit, search_query, username, compress_long parameters
+- Accept pre-filtered message data and apply additional filtering via explicit parameters
 - Format message data into structured result for LM Studio consumption
 - Handle parameter validation and error cases
 
 Tool Definition:
 - name: "channel_search"
 - description: "Search recent messages in a Discord channel to gather context"
-- parameters: { channel_id, limit, search_query, username, compress_long }
+- parameters: { channel, limit, search_query, username, has_image, has_link, has_file, has_video, has_audio, after_date, before_date, compress_long, ... }
 
 Integration:
-- The bot layer fetches messages via Discord.py async API
+- The bot layer fetches messages via Discord.py async API and passes them as 'messages' kwarg
 - This tool formats the pre-fetched data into the structured result
 - Message data is passed via kwargs from the tool executor
+
+DEPRECATED: The old operator-based query syntax (e.g., "has: image from: BotGuzu") is deprecated.
+Use explicit boolean parameters instead: has_image=true, username="BotGuzu", etc.
+The operator syntax is no longer supported and will be removed in a future version.
 """
 
 import json
 import logging
+import re
 import time
 import hashlib
-from typing import Dict, Optional
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple, Any
 
 from ..base import BaseTool, ToolResult
 
@@ -65,10 +71,20 @@ class ChannelSearchTool(BaseTool):
             "find specific messages, or gather context before responding. "
             "Channel specification: use '#123456789' for channel ID, '@channelname' for channel name, "
             "'this' for the current active channel, or leave empty to search all channels. "
-            "Optional filters: limit (default 15, max 50), search_query (text filter), "
-            "username (author filter), compress_long (truncate long messages). "
+            "Filtering (use explicit parameters, NOT operator syntax in search_query): "
+            "Use has_image=true / has_link=true / has_file=true / has_video=true / has_audio=true "
+            "to filter by content type (any of these can be set to true — they act as OR). "
+            "Use username='BotGuzu' to filter by author, after_date='YYYY-MM-DD' / before_date='YYYY-MM-DD' "
+            "for date range, and search_query='keyword' for text matching "
+            "(all act as AND — if specified, all must match). "
+            "For single-word search_query: matches only in message content (not file names). "
+            "For multi-word search_query: ALL words must appear somewhere in the message. "
+            "Optional: limit (default 15, max 50), compress_long (truncate long messages). "
             "For accessing older messages: use offset to skip recent messages, and windows to fetch "
-            "multiple non-contiguous message windows (max 5 windows). Each window fetches 'limit' messages."
+            "multiple non-contiguous message windows (max 5 windows). Each window fetches 'limit' messages. "
+            "For searching deeper into message history (older than the last 50 messages): use "
+            "deep_search=true. This scans up to 500 messages backward from newest to oldest, "
+            "stopping when a match is found."
         )
 
     @property
@@ -87,13 +103,41 @@ class ChannelSearchTool(BaseTool):
                     "minimum": 1,
                     "maximum": 50
                 },
+                "has_image": {
+                    "type": "boolean",
+                    "description": "If true, filter to only messages with image attachments"
+                },
+                "has_link": {
+                    "type": "boolean",
+                    "description": "If true, filter to only messages with link embeds (URL previews)"
+                },
+                "has_file": {
+                    "type": "boolean",
+                    "description": "If true, filter to only messages with file attachments (non-image files)"
+                },
+                "has_video": {
+                    "type": "boolean",
+                    "description": "If true, filter to only messages with video attachments"
+                },
+                "has_audio": {
+                    "type": "boolean",
+                    "description": "If true, filter to only messages with audio attachments"
+                },
                 "search_query": {
                     "type": "string",
-                    "description": "Optional text filter — only messages containing this text are returned"
+                    "description": "Optional text search filter. Single word: matches in message content only. Multiple words: ALL words must appear somewhere in the message (AND logic). Does not search file/attachment names."
                 },
                 "username": {
                     "type": "string",
-                    "description": "Optional username filter — only messages from this specific user"
+                    "description": "Optional username filter — only messages from this specific user (e.g., 'BotGuzu' or 'BotGuzu#3756')"
+                },
+                "after_date": {
+                    "type": "string",
+                    "description": "Optional date filter — only messages after this date (YYYY-MM-DD format)"
+                },
+                "before_date": {
+                    "type": "string",
+                    "description": "Optional date filter — only messages before this date (YYYY-MM-DD format)"
                 },
                 "compress_long": {
                     "type": "boolean",
@@ -138,6 +182,18 @@ class ChannelSearchTool(BaseTool):
                     "default": 1,
                     "minimum": 1,
                     "maximum": 5
+                },
+                "deep_search": {
+                    "type": "boolean",
+                    "description": "Enable deep search mode. When True, the bot will scan up to max_depth messages backward from newest to oldest, stopping early when a match is found. Use this to find older messages that are beyond the last 50 messages. Filtering is applied via explicit parameters (has_image, username, etc.), NOT via operator syntax in search_query.",
+                    "default": False
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Maximum number of messages to scan when deep_search is enabled. Default is 500, maximum is 5000.",
+                    "default": 500,
+                    "minimum": 100,
+                    "maximum": 5000
                 }
             },
             "required": []
@@ -146,6 +202,26 @@ class ChannelSearchTool(BaseTool):
     # Context window defaults
     CONTEXT_BEFORE = 4
     CONTEXT_AFTER = 2
+
+    def _parse_date(self, date_str: str) -> Optional[datetime]:
+        """Parse a date string into a datetime object.
+
+        Supports ISO 8601 format (e.g., "2026-06-01", "2026-06-01T00:00:00Z").
+
+        Args:
+            date_str: Date string to parse.
+
+        Returns:
+            datetime object with UTC timezone, or None if parsing fails.
+        """
+        # Try ISO format with time
+        for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(date_str, fmt)
+                return dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        return None
 
     def _generate_cache_key(self, kwargs: dict) -> Optional[str]:
         """Generate a cache key from the search parameters.
@@ -272,15 +348,28 @@ class ChannelSearchTool(BaseTool):
                     content="No messages found in this channel."
                 )
 
-            # Apply filters from kwargs
+            # =========================================================================
+            # NEW PARAMETER-BASED FILTERING LOGIC
+            # =========================================================================
+            
+            # Extract new explicit parameters
+            has_image_param = kwargs.get("has_image", False)
+            has_link_param = kwargs.get("has_link", False)
+            has_file_param = kwargs.get("has_file", False)
+            has_video_param = kwargs.get("has_video", False)
+            has_audio_param = kwargs.get("has_audio", False)
+            username_filter = kwargs.get("username", "").strip() or None
+            after_date_param = kwargs.get("after_date", "").strip() or None
+            before_date_param = kwargs.get("before_date", "").strip() or None
             raw_search_query = kwargs.get("search_query", "").strip()
-            search_query = raw_search_query.lower() if raw_search_query else ""
-            username_filter = kwargs.get("username", "").strip()
             compress_long = kwargs.get("compress_long", True)
 
             # Extract context window parameters
             context_before = kwargs.get("context_before", self.CONTEXT_BEFORE)
             context_after = kwargs.get("context_after", self.CONTEXT_AFTER)
+
+            # Parse search_query into words (lowercase)
+            search_query_words = raw_search_query.lower().split() if raw_search_query else []
 
             # Recommendation 3: Reject queries shorter than 2 characters
             if raw_search_query and len(raw_search_query) < 2:
@@ -294,62 +383,156 @@ class ChannelSearchTool(BaseTool):
 
             # Recommendation 5: When no filters are specified, reduce limit to avoid wasting tokens
             # Return only the 5 most recent messages instead of fetching the full limit
-            if not search_query and not username_filter:
+            # BUT: don't apply this optimization when filters are present
+            has_any_filter = (
+                has_image_param or has_link_param or has_file_param or has_video_param or has_audio_param
+                or username_filter or after_date_param or before_date_param or search_query_words
+            )
+            if not has_any_filter:
                 # Apply a reduced limit for unfiltered queries
                 effective_limit = min(5, len(messages) if messages else 5)
                 messages = messages[:effective_limit]
 
-            # Apply search_query filter — two-tier search with internal keyword splitting
-            # First word = primary (sent to Discord API), remaining words = secondary (local filter)
-            if search_query:
-                # Split query into primary (first word) and secondary (remaining words)
-                query_parts = raw_search_query.strip().split()
-                primary_keyword = query_parts[0].lower() if query_parts else ""
-                secondary_keywords = [k.lower() for k in query_parts[1:]]
-                
+            # =========================================================================
+            # STEP 1: Apply OR logic for has_* parameters
+            # Any matching content type includes the message
+            # =========================================================================
+            has_any_content_filter = has_image_param or has_link_param or has_file_param or has_video_param or has_audio_param
+            if has_any_content_filter:
                 filtered = []
                 for m in messages:
-                    content_text = m.get("content", "").lower()
-                    attachment_names = [a or "" for a in m.get("attachments", [])]
-                    image_urls = [u or "" for u in m.get("image_urls", [])]
-                    replied_content = (m.get("replied_to_content") or "").lower()
+                    match = False
+                    content_types = m.get("content_types", {})
                     
-                    # Primary keyword: check content, attachments, image_urls
-                    primary_match = (
-                        primary_keyword in content_text
-                        or any(primary_keyword in a for a in attachment_names)
-                        or any(primary_keyword in u for u in image_urls)
-                        or primary_keyword in replied_content
-                    )
+                    # OR logic: check each enabled has_* parameter
+                    if has_image_param and not match:
+                        if content_types and "image" in content_types:
+                            match = True
+                        else:
+                            has_image_attachments = m.get("has_image", False)
+                            has_embeds = m.get("has_embeds", False)
+                            has_image_urls = bool(m.get("image_urls", []))
+                            match = has_image_attachments or (has_embeds and has_image_urls)
                     
-                    # Secondary keywords: ALL must match somewhere (AND logic)
-                    # Check across ALL fields for each keyword
-                    secondary_match = True
-                    if secondary_keywords:
-                        for sq in secondary_keywords:
-                            # Check if keyword matches anywhere in any field
-                            keyword_found = (
-                                sq in content_text
-                                or any(sq in a for a in attachment_names)
-                                or any(sq in u for u in image_urls)
-                                or sq in replied_content
-                            )
-                            if not keyword_found:
-                                secondary_match = False
-                                break
+                    if has_link_param and not match:
+                        if content_types and "link" in content_types:
+                            match = True
+                        else:
+                            match = m.get("has_embeds", False)
                     
-                    # Primary must match AND all secondary keywords must match
-                    if primary_match and secondary_match:
+                    if has_file_param and not match:
+                        if content_types and "file" in content_types:
+                            match = True
+                        else:
+                            match = len(m.get("attachments", [])) > 0 or m.get("has_image", False)
+                    
+                    if has_video_param and not match:
+                        if content_types and "video" in content_types:
+                            match = True
+                        else:
+                            match = False
+                    
+                    if has_audio_param and not match:
+                        if content_types and "audio" in content_types:
+                            match = True
+                        else:
+                            match = False
+                    
+                    if match:
                         filtered.append(m)
                 messages = filtered
 
-            # Apply username filter
+            # =========================================================================
+            # STEP 2: Apply AND logic for username filter
+            # =========================================================================
             if username_filter:
-                messages = [
-                    m for m in messages
-                    if m.get("author", "").lower() == username_filter.lower()
-                    or m.get("display_name", "").lower() == username_filter.lower()
-                ]
+                # Strip Discord discriminator (e.g., "BotGuzu#3756" → "BotGuzu")
+                filter_base = re.sub(r'#\d{4}$', '', username_filter).strip()
+                filter_lower = filter_base.lower()
+                
+                filtered = []
+                for m in messages:
+                    author = m.get("author", "")
+                    display_name = m.get("display_name", "")
+                    
+                    # Strip discriminator from stored values for comparison
+                    author_base = re.sub(r'#\d{4}$', '', author).lower()
+                    display_base = re.sub(r'#\d{4}$', '', display_name).lower()
+                    
+                    # Match if: exact match OR filter is contained in author/display_name
+                    match = (
+                        author_base == filter_lower
+                        or display_base == filter_lower
+                        or filter_lower in author.lower()
+                        or filter_lower in display_name.lower()
+                    )
+                    if match:
+                        filtered.append(m)
+                messages = filtered
+
+            # =========================================================================
+            # STEP 3: Apply AND logic for after_date filter
+            # =========================================================================
+            if after_date_param:
+                after_dt = self._parse_date(after_date_param)
+                if after_dt:
+                    # For date-only inputs (no time component), treat as "end of day"
+                    # So `after_date: 2026-06-03` means "after June 3rd" (i.e., June 4th+)
+                    if after_dt.hour == 0 and after_dt.minute == 0 and after_dt.second == 0:
+                        from datetime import timedelta
+                        after_dt = after_dt + timedelta(days=1)
+                    filtered = []
+                    for m in messages:
+                        msg_ts = m.get("timestamp", "")
+                        if msg_ts:
+                            msg_dt = self._parse_date(msg_ts)
+                            if msg_dt is not None and msg_dt >= after_dt:
+                                filtered.append(m)
+                    messages = filtered
+
+            # =========================================================================
+            # STEP 4: Apply AND logic for before_date filter
+            # =========================================================================
+            if before_date_param:
+                before_dt = self._parse_date(before_date_param)
+                if before_dt:
+                    filtered = []
+                    for m in messages:
+                        msg_ts = m.get("timestamp", "")
+                        if msg_ts:
+                            msg_dt = self._parse_date(msg_ts)
+                            if msg_dt is not None and msg_dt < before_dt:
+                                filtered.append(m)
+                    messages = filtered
+
+            # =========================================================================
+            # STEP 5: Apply AND logic for search_query
+            # Single word: match only in message content (not file names)
+            # Multiple words: ALL words must appear somewhere in the message content (AND)
+            # =========================================================================
+            if search_query_words:
+                filtered = []
+                for m in messages:
+                    content_text = m.get("content", "").lower()
+                    replied_content = (m.get("replied_to_content") or "").lower()
+                    
+                    if len(search_query_words) == 1:
+                        # Single word: match in content only (not file/attachment names)
+                        word_match = (
+                            search_query_words[0] in content_text
+                            or search_query_words[0] in replied_content
+                        )
+                    else:
+                        # Multiple words: ALL must match somewhere (AND logic)
+                        word_match = True
+                        for word in search_query_words:
+                            if word not in content_text and word not in replied_content:
+                                word_match = False
+                                break
+                    
+                    if word_match:
+                        filtered.append(m)
+                messages = filtered
 
             if not messages:
                 return ToolResult(
@@ -360,20 +543,22 @@ class ChannelSearchTool(BaseTool):
                 )
 
             # Apply asymmetric context window expansion around matching messages
-            if search_query or username_filter:
+            # Use the new parameter names for consistency
+            if search_query_words or username_filter:
                 # Find indices of matching messages
+                # Use raw_search_query for context matching (preserve original case for display)
                 match_indices = set()
                 for i, m in enumerate(messages):
-                    content_match = search_query and search_query in m.get("content", "").lower()
-                    attachment_match = search_query and any(
-                        search_query.lower() in (a or "").lower()
-                        for a in m.get("attachments", [])
+                    content_text = m.get("content", "").lower()
+                    content_match = raw_search_query and any(
+                        word in content_text
+                        for word in search_query_words
                     )
                     username_match = username_filter and (
                         m.get("author", "").lower() == username_filter.lower()
                         or m.get("display_name", "").lower() == username_filter.lower()
                     )
-                    if content_match or attachment_match or username_match:
+                    if content_match or username_match:
                         match_indices.add(i)
 
                 # Expand context window around each match

@@ -263,8 +263,9 @@ Built with Flask backend and vanilla JavaScript frontend with Catppuccin Mocha d
 | ⚙️ Settings | Configuration for temperature, max_tokens, max_response_length, system_prompt, message_delay |
 | 📝 Logs | Full log history with filtering, color-coding, and unread badge |
 
-#### Debug Panel (`src/templates/debug.html` + `src/static/debug_script.js` + `src/static/debug_styles.css`)
+#### Debug Panel (`src/templates/debug.html` + `src/static/debug_script.js`)
 Separate page at `/debug` route with advanced debugging tools.
+Note: `debug_styles.css` was deleted and its styles were merged into `minimal.css` as a `#debug-page` section.
 
 **Features:**
 | Feature | Description |
@@ -329,20 +330,35 @@ Project6_Discord_helloWorld/
 │   ├── logger.py                    # Logging utility with in-memory buffer
 │   │
 │   ├── discord_bot.py               # Backward-compat wrapper (~18 lines)
-│   ├── discord_api_client.py        # (if separate Discord API client exists)
 │   │
 │   ├── discord_bot/                 # Discord bot package (modular design)
 │   │   ├── __init__.py
 │   │   ├── bot_core.py              # Main DiscordBot class, events, lifecycle
-│   │   ├── message_handler.py       # Message processing, LM Studio interaction
-│   │   ├── session_manager.py       # Session lifecycle, timeout cleanup
-│   │   ├── token_tracker.py         # Token usage tracking per channel
+│   │   ├── message_handler.py       # Message processing, LM Studio interaction, tool calling
+│   │   ├── message_processor.py     # Message pipeline, batch handling, pending queue
+│   │   ├── message_router.py        # Message routing, mention detection, command parsing
+│   │   ├── session_manager.py       # Session lifecycle, timeout cleanup, state queries
+│   │   ├── token_tracker.py         # Token usage tracking per channel for web UI sync
 │   │   ├── typing_indicator.py      # Discord typing indicator
-│   │   └── delay_processor.py       # Delayed message processing
+│   │   ├── delay_processor.py       # Delayed message processing for follow-up batching
+│   │   ├── cancellation.py          # Cancellation management (task-based)
+│   │   ├── image_downloader.py      # Safe image downloading from URLs
+│   │   ├── lm_caller.py             # LM Studio API caller abstraction
+│   │   ├── memory_callbacks.py      # Memory system callbacks
+│   │   └── user_identity.py         # User identity tracking
 │   │
-│   ├── gui/                         # (Not used - replaced by Flask web UI)
+│   ├── lm_models/                   # LM Studio model management (FEAT-006)
 │   │   ├── __init__.py
-│   │   └── ...                      # Placeholder for future tkinter GUI
+│   │   ├── api.py                   # LM Studio API client
+│   │   ├── manager.py               # Model manager (list, select, delete)
+│   │   └── models.py                # Model data classes
+│   │
+│   ├── gui/                         # Tkinter GUI (separate from Flask web UI)
+│   │   ├── __init__.py
+│   │   ├── main_window.py           # Main tkinter window
+│   │   ├── channel_window.py        # Per-channel conversation windows
+│   │   ├── config_window.py         # Configuration window
+│   │   └── styles.py                # GUI styling constants
 │   │
 │   ├── tools/
 │   │   ├── __init__.py
@@ -351,28 +367,42 @@ Project6_Discord_helloWorld/
 │   │   ├── registry.py              # Tool registry
 │   │   └── builtins/
 │   │       ├── __init__.py
+│   │       ├── channel_search.py    # Discord channel message search
 │   │       ├── comfyui_generate.py  # ComfyUI image generation
-│   │       ├── image_describe.py    # Image description
+│   │       ├── context_compressor.py# Context compression for large conversations
+│   │       ├── image_compare.py     # Image description + URL validation
 │   │       ├── math_calc.py         # Math calculator
 │   │       └── memory_tool.py       # Memory save/search
 │   │
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   ├── memory_manager.py        # Memory management
-│   │   └── memorylite.py            # Memory lite client
+│   │   ├── memorylite.py            # Memory lite client
+│   │   ├── memorybot.py             # MemoryBot core (stub — not yet implemented)
+│   │   ├── memorybot_prompt.py      # MemoryBot prompt templates
+│   │   ├── progress.md              # Memory module implementation progress
+│   │   ├── issues_tracker.md        # Memory-specific issue tracking
+│   │   └── README.md                # Memory module documentation
 │   │
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── conversation.py          # Conversation state model
 │   │   └── session.py               # Session state model
 │   │
-│   ├── static/
+│   ├── static/                      # Flask static assets
 │   │   ├── script.js                # Main page JavaScript
 │   │   ├── debug_script.js          # Debug page JavaScript
-│   │   ├── styles.css               # Main page CSS (Catppuccin Mocha)
-│   │   └── debug_styles.css         # Debug page CSS
+│   │   ├── minimal.css              # Main page CSS (Catppuccin Mocha, refactored)
+│   │   ├── lm-instances.css         # LM instances styling
+│   │   ├── lib/                     # JavaScript library modules
+│   │   │   ├── lm-instances.js
+│   │   │   ├── logs.js
+│   │   │   ├── server-config.js
+│   │   │   ├── settings.js
+│   │   │   ├── token-metrics.js
+│   │   │   └── utils.js
 │   │
-│   └── templates/
+│   └── templates/                   # Flask HTML templates
 │       ├── index.html               # Main page template
 │       └── debug.html               # Debug page template
 │
@@ -487,7 +517,7 @@ requests>=2.31.0
 
 ### Debug Panel (Added 5/12/2026)
 - [x] Create separate debug page at `/debug` route
-- [x] Create debug_styles.css for debug page styling
+- [x] Merge debug styles into `minimal.css` (replaced separate `debug_styles.css`)
 - [x] Create debug_script.js for debug page functionality
 - [x] Add session management endpoints
 - [x] Add diagnostics tools (test connections, force disconnect)
@@ -523,15 +553,19 @@ requests>=2.31.0
   - Verified: Bot now correctly maintains context within sessions
 
 ### Phase 12: Planned Features (Added 5/12/2026)
-- [ ] **🆕 Discord Channel Search Tool** - Tool for LM Studio to search Discord channel messages
+- [x] **🆕 Discord Channel Search Tool** - Tool for LM Studio to search Discord channel messages
   - Actions: `search`, `list_channels`, `get_channel_info`, `search_by_user`
   - Configurable scope: `active_channel`, `all_channels`, `specified_channels`
   - Source metadata included in results (channel, author, timestamp, message ID)
   - Disabled by default (`enable_tool: false`)
-  - New file: `src/tools/builtins/discord_search.py`
-- [ ] **Discord Token Metrics Push to Web UI** - Real-time token sync from Discord bot to web UI
-- [ ] **Built-in Tools Integration** - math_calc, image_describe, comfyui_generate, memory_tool
-- [ ] **Memory Integration** - memorylite post-session memory creation
+  - Implemented in: `src/tools/builtins/channel_search.py`
+- [x] **Discord Token Metrics Push to Web UI** - Real-time token sync from Discord bot to web UI
+  - Implemented in: `src/discord_bot/token_tracker.py`, `/api/tokens/` endpoints
+- [x] **Built-in Tools Integration** - math_calc, image_compare, comfyui_generate, memory_tool, context_compressor, channel_search
+  - Implemented in: `src/tools/builtins/` (6 tools)
+- [x] **Memory Integration** - memorylite post-session memory creation
+  - Implemented in: `src/tools/builtins/memory_tool.py`, session lifecycle hooks in `bot_core.py`
+  - Note: Memory recall before LM calls (Phase 3) is NOT implemented — pending future work
 - [ ] **Channel Configuration Window** - Per-channel settings UI
 
 ### Phase 13: Image Handling Bug Fixes (Added 5/13/2026) - BUG-002
@@ -685,6 +719,85 @@ async def on_message(self, message):
 
 ---
 
+## Context Swapping Architecture
+
+### Overview
+
+The bot uses a **context swapping** model to enable multiple specialized bot roles (Main Bot, MemoryBot, SummaryBot) to share a **single LM Studio connection**. This ensures low-end devices with limited GPU memory can run the system efficiently.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    SINGLE DISCORD BOT INSTANCE                          │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │              ONE LM Studio Connection (Shared)                     │  │
+│  │         Serialized via global lock (lm_studio_lock)                │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                            ▲                                              │
+│                            │                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                    CONTEXT SWAPPING LAYER                        │   │
+│  │                                                                  │   │
+│  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐    │   │
+│  │  │ Main Bot       │  │ MemoryBot      │  │ SummaryBot     │    │   │
+│  │  │ (Channel A ctx)│  │ (Memory prompt)│  │ (Summary prompt)│    │   │
+│  │  └────────────────┘  └────────────────┘  └────────────────┘    │   │
+│  │       ↕ swap              ↕ swap            ↕ swap              │   │
+│  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐    │   │
+│  │  │ Main Bot       │  │ MemoryBot      │  │ SummaryBot     │    │   │
+│  │  │ (Channel B ctx)│  │ (Memory prompt)│  │ (Summary prompt)│    │   │
+│  │  └────────────────┘  └────────────────┘  └────────────────┘    │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  Each channel has its OWN conversation context                         │
+│  Each bot role has its OWN system prompt                               │
+│  Only ONE context+prompt combo is active against LM Studio at a time  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Bot Roles (Context Swapping)
+
+| Bot Role | Purpose | System Prompt | Context Source |
+|----------|---------|---------------|----------------|
+| **Main Bot** | General Discord conversation | Default bot prompt | Per-channel `conversation_history` |
+| **MemoryBot** | Search memory database | `memorybot_prompt.py` | MemoryDB results + query context |
+| **SummaryBot** | Summarize channel context | (Planned in `context_management.md`) | Channel messages |
+
+Each role swaps:
+1. **Conversation context** (the messages list)
+2. **System prompt** (role-specific instructions)
+3. **Tool set** (Main Bot has all tools, MemoryBot has only memory tools)
+
+### How Context Swapping Works
+
+```python
+# When Main Bot needs channel context:
+1. Swap context → Channel messages (via channel_search)
+2. Swap prompt → SummaryBot prompt
+3. Call LM Studio → Get summary
+4. Swap back → Main Bot context
+5. Continue Main Bot conversation
+
+# When Main Bot needs memory search:
+1. Swap context → MemoryBot prompt + query
+2. Swap prompt → MemoryBot system prompt
+3. Call LM Studio → Get memory search results
+4. Swap back → Main Bot context
+5. Continue Main Bot conversation
+```
+
+### Context Size Considerations
+
+Each bot role's conversation context must be bounded to prevent LM Studio overload:
+
+| Bot Role | Context Source | Size Management Strategy |
+|----------|---------------|------------------------|
+| **Main Bot** | Per-channel `conversation_history` | Implement message limit or token-based trimming |
+| **MemoryBot** | Multi-turn query refinement (up to 3 turns) | Limit refinement turns and context size |
+| **SummaryBot** | Channel messages via channel_search | Limit `limit` parameter in search queries |
+
+---
+
 ## Design Decisions
 
 1. **GUI Framework**: `tkinter` (built-in, no extra dependency) - can switch to `customtkinter` if modern look is preferred
@@ -693,6 +806,7 @@ async def on_message(self, message):
 4. **Tool System**: Plugin-based with registry pattern - easy to add new tools
 5. **Logging**: Dual output - GUI log area + file log (`app.log`)
 6. **Conversation Context**: Per-channel conversation history maintained by the bot
+7. **Context Swapping**: Multiple bot roles (Main Bot, MemoryBot, SummaryBot) share a single LM Studio connection via global lock serialization
 
 ---
 
@@ -802,24 +916,25 @@ The GUI must remain **responsive at all times**, even when tools are executing.
 
 #### Concurrency Architecture
 ```
-GUI Thread (tkinter)
+Flask Request Thread
     │
-    ├── Main loop (sync)
+    ├── WSGI server (werkzeug)
     │
     └── Threading for:
-         ├── Discord bot event loop (asyncio)
+         ├── Discord bot event loop (asyncio, runs in background thread)
          ├── LM Studio API calls (asyncio)
          ├── Tool execution (thread pool for sync tools)
          ├── Tool execution (async for long-running tools)
-         └── GUI log updates (thread-safe queue)
+         └── Log updates (thread-safe queue → Flask session / API)
 ```
 
 **Implementation:**
-- Discord bot runs in its own asyncio event loop
-- LM Studio client uses async HTTP calls
-- GUI updates via `root.after()` for thread safety
+- Discord bot runs in its own asyncio event loop (started in a background thread by `app.py`)
+- LM Studio client uses async HTTP calls via OpenAI client
+- Flask handles all GUI/web requests synchronously on request threads
 - Tool executor uses `concurrent.futures` for mixed sync/async tools
 - Message processor uses a semaphore to prevent duplicate tool calls
+- Log buffer in memory accessible via `/api/logs/` endpoints
 
 #### Processing Flow
 ```

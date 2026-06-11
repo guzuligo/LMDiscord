@@ -25,6 +25,22 @@
 
 ## Error Handling & User Feedback
 
+### BUG-LM-001: LM Studio Error Handler Crashes on Non-Standard Error Response Structure
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-LM-001 |
+| **Date** | 2026-06-05 |
+| **Status** | ✅ Solved |
+| **Severity** | Critical |
+| **Description** | When LM Studio returns an HTTP error response (e.g., 400 Bad Request), the error handling code in `lm_studio_client.py` assumed the JSON response always has a `{"error": {"message": "..."}}` structure. Sometimes the `error` field is a string directly (e.g., `"error": "Failed to load model"`) or missing entirely. This caused an `AttributeError` when calling `.get("message", ...)` on a string, crashing the exception handler itself. |
+| **Log Evidence** | ```AttributeError: 'str' object has no attribute 'get'``` at line 285 in `lm_studio_client.py` where `error_data.get("error", {}).get("message", str(e))` was called. |
+| **Root Cause** | The error extraction code did not handle the case where `error_data.get("error")` returns a string instead of a dict. Python's `.get()` method doesn't exist on strings, causing the exception handler to crash. |
+| **Solution** | Added safe error message extraction that handles three possible formats: (1) `error` is a dict → extract `error["message"]` or fall back to `json.dumps(error)`. (2) `error` is a string → use it directly. (3) `error` is None/missing → fall back to `json.dumps(error_data)`. Detailed errors are logged via `logger.error()` in `lm_studio_client.py`. User-facing messages are handled by `_format_lm_studio_error_message()` in `message_processor.py` which returns generic messages without leaking internal details. |
+| **Files Modified** | `src/lm_studio_client.py` → `chat()` and `chat_with_tools()` methods, lines ~280-295 |
+| **User-Facing Result** | No change — users still see the same generic error messages as before. The fix only prevents the bot from crashing when LM Studio returns unexpected error response formats. |
+
+---
+
 ### BUG-016: LM Studio Model Loading Error Leaks Internal Details to Users
 
 | Field | Value |
@@ -1159,6 +1175,74 @@
 ---
 
 ### AI-001: AI Fails to Identify Image URLs in channel_search Results
+
+| Field | Value |
+|-------|-------|
+| **ID** | AI-001 |
+| **Date** | 2026-06-03 |
+| **Status** | 📋 Documented — Prompt/Context Issue |
+| **Severity** | Medium |
+| **Description** | After `channel_search` returned 11 messages (including previous conversations where the user explicitly shared mannequin image URLs), the AI responded: "I didn't find any mannequin images in recent messages." |
+| **Note** | This entry was marked as "Documented" not "Solved" — kept for reference. |
+
+---
+
+### BUG-013 (search): channel_search Uses Operator-Based Query Syntax That LM Models Don't Learn Correctly
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-013 |
+| **Date** | 2026-06-05 |
+| **Status** | ✅ Solved |
+| **Severity** | High |
+| **Description** | The `channel_search` tool used operator-based query syntax (`has: image from: BotGuzu#3756`) that the LM model had to learn to use correctly. In practice, the LM model either didn't use operators at all, or degraded the query over repeated calls (e.g., `has:image mannequin` → `manniqu`). This caused the tool to return empty results and the LM to get stuck in a re-calling loop (BUG-013 pattern). |
+| **Root Cause** | The tool relied on the LM model to learn and correctly use operator syntax embedded in a single `search_query` string. This is unreliable because: (1) The LM doesn't always learn operator syntax from the tool description. (2) The LM may misspell or truncate operator queries on re-calls. (3) The operator parser was complex and error-prone. |
+| **Fix Applied** | **Complete rewrite of the tool's parameter schema and filtering logic:** <br><br>**1. New explicit boolean parameters** — Replaced `has:` operator with dedicated boolean parameters: `has_image`, `has_link`, `has_file`, `has_video`, `has_audio`. The LM model now simply sets `has_image: true` instead of `has: image`. <br><br>**2. New explicit date parameters** — Replaced `after:`/`before:` operators with `after_date` and `before_date` string parameters (YYYY-MM-DD format). <br><br>**3. OR logic for has_* parameters** — All `has_*` boolean parameters act as OR filters. If `has_image: true` OR `has_link: true` OR `has_file: true` etc., the message matches if it has ANY of the specified content types. <br><br>**4. AND logic for other parameters** — `username`, `after_date`, `before_date`, and `search_query` all act as AND filters. All specified filters must match. <br><br>**5. Simplified search_query behavior** — Single-word `search_query`: matches only in message content (not file/attachment names). Multi-word `search_query`: ALL words must appear somewhere in the message content (AND logic). <br><br>**6. Updated tool description** — Removed all operator syntax references. New description clearly explains the boolean parameter approach. |
+| **Files Modified** | `src/tools/builtins/channel_search.py` → `description` property, `parameters` property, `execute()` method (complete rewrite of filtering logic) |
+| **New Tool Schema** | `has_image` (boolean), `has_link` (boolean), `has_file` (boolean), `has_video` (boolean), `has_audio` (boolean), `after_date` (string), `before_date` (string), `search_query` (string — simplified), `username` (string — unchanged), `channel` (string — unchanged), `limit` (integer — unchanged) |
+
+---
+
+### BUG-013-DEP: Deprecate Operator-Based Query Syntax in channel_search
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-013-DEP |
+| **Date** | 2026-06-05 |
+| **Status** | ✅ Solved |
+| **Severity** | Low (maintenance improvement) |
+| **Description** | The `channel_search` tool previously supported an operator-based query syntax (e.g., `"has: image from: BotGuzu#3756"`) that was deprecated in BUG-013. The operator syntax was removed entirely to prevent confusion and ensure the LM model uses only the new explicit parameter-based approach. |
+| **Root Cause** | After BUG-013 introduced explicit boolean parameters (`has_image`, `username`, etc.), the old `_parse_operators()` method and `OPERATOR_PATTERN` regex were still present in the codebase. While they were no longer called, their presence could still confuse developers or future LM models into using the deprecated syntax. |
+| **Fix Applied** | **1. Removed `_parse_operators()` method** — The entire method that extracted operators from `search_query` strings was deleted. **2. Removed `OPERATOR_PATTERN` regex** — The compiled regex pattern `r'(has|from|in|after|before):\s*(\S+)'` was deleted. **3. Updated tool description** — Added explicit deprecation notice: "DEPRECATED: The old operator-based query syntax (e.g., 'has: image from: BotGuzu') is deprecated. Use explicit boolean parameters instead: has_image=true, username='BotGuzu', etc." **4. Updated `deep_search` parameter description** — Clarified that filtering is applied via explicit parameters, NOT via operator syntax in `search_query`. |
+| **Files Modified** | `src/tools/builtins/channel_search.py` → removed `_parse_operators()`, `OPERATOR_PATTERN`, updated `description` and `deep_search` parameter |
+| **Migration Guide** | **Old syntax:** `"has: image from: BotGuzu#3756"` → **New parameters:** `has_image: true, username: "BotGuzu#3756"` <br> **Old syntax:** `"has: file after: 2026-06-01 before: 2026-06-05"` → **New parameters:** `has_file: true, after_date: "2026-06-01", before_date: "2026-06-05"` <br> **Old syntax:** `"from: @general mannequin"` → **New parameters:** `username: "@general", search_query: "mannequin"` |
+
+---
+
+### AI-001: AI Fails to Identify Image URLs in channel_search Results
+
+| Field | Value |
+|-------|-------|
+| **ID** | AI-001 |
+| **Date** | 2026-06-03 |
+| **Status** | 📋 Documented — Prompt/Context Issue |
+| **Severity** | Medium |
+| **Description** | After `channel_search` returned 11 messages (including previous conversations where the user explicitly shared mannequin image URLs), the AI responded: "I didn't find any mannequin images in recent messages." |
+| **Note** | This entry was marked as "Documented" not "Solved" — kept for reference. |
+
+---
+
+### AI-001: AI Fails to Identify Image URLs in channel_search Results
+
+| Field | Value |
+|-------|-------|
+| **ID** | AI-001 |
+| **Date** | 2026-06-03 |
+| **Status** | 📋 Documented — Prompt/Context Issue |
+| **Severity** | Medium |
+| **Description** | After `channel_search` returned 11 messages (including previous conversations where the user explicitly shared mannequin image URLs), the AI responded: "I didn't find any mannequin images in recent messages." |
+| **Note** | This entry was marked as "Documented" not "Solved" — kept for reference. |
+
 
 | Field | Value |
 |-------|-------|
