@@ -201,9 +201,19 @@ class LMStudioClient:
             try:
                 error_data = response.json()
                 error_body = json.dumps(error_data)
-                # Extract the error message for logging
-                error_msg = error_data.get("error", {}).get("message", str(e))
-                logger.error(f"LM Studio HTTP Error {status_code}: {error_msg}. Response: {error_body[:2000]}")
+                # Safely extract error message - handle both dict and string error formats
+                error_obj = error_data.get("error")
+                if isinstance(error_obj, dict):
+                    error_msg = error_obj.get("message", json.dumps(error_obj))
+                elif isinstance(error_obj, str):
+                    error_msg = error_obj
+                else:
+                    error_msg = json.dumps(error_data)
+                # Log detailed error to debug logs only (no data leakage to chat)
+                logger.error(
+                    f"LM Studio HTTP Error {status_code}: {error_msg}. "
+                    f"Full response: {error_body[:2000]}"
+                )
             except (json.JSONDecodeError, KeyError):
                 logger.error(f"LM Studio HTTP Error {status_code}: {e}. Response: {response.text[:2000]}")
                 error_body = response.text
@@ -282,8 +292,19 @@ class LMStudioClient:
             try:
                 error_data = response.json()
                 error_body = json.dumps(error_data)
-                error_msg = error_data.get("error", {}).get("message", str(e))
-                logger.error(f"LM Studio HTTP Error {status_code}: {error_msg}. Response: {error_body[:2000]}")
+                # Safely extract error message - handle both dict and string error formats
+                error_obj = error_data.get("error")
+                if isinstance(error_obj, dict):
+                    error_msg = error_obj.get("message", json.dumps(error_obj))
+                elif isinstance(error_obj, str):
+                    error_msg = error_obj
+                else:
+                    error_msg = json.dumps(error_data)
+                # Log detailed error to debug logs only (no data leakage to chat)
+                logger.error(
+                    f"LM Studio HTTP Error {status_code}: {error_msg}. "
+                    f"Full response: {error_body[:2000]}"
+                )
             except (json.JSONDecodeError, KeyError):
                 logger.error(f"LM Studio HTTP Error {status_code}: {e}. Response: {response.text[:2000]}")
                 error_body = response.text

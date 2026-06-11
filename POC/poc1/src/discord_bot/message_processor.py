@@ -42,12 +42,25 @@ class MessageProcessor:
         max_tool_turns: int = 5,
         memory_manager: Optional[MemoryManager] = None,
         memory_recall_limit: int = 5,
+        # Context management settings
+        context_compression_enabled: bool = True,
+        context_token_threshold: int = 80,
+        context_message_threshold: int = 20,
+        context_messages_to_keep_fresh: int = 6,
+        context_summary_length: int = 300,
+        context_lm_max_tokens: int = 4096,
     ):
         """Initialize message processor.
 
         Args:
             memory_manager: MemoryManager instance for recalling relevant memories.
             memory_recall_limit: Max memories to recall per query.
+            context_compression_enabled: Whether automatic context compression is enabled.
+            context_token_threshold: Token percentage threshold to trigger compression.
+            context_message_threshold: Message count threshold to trigger compression.
+            context_messages_to_keep_fresh: Number of recent messages to keep uncompressed.
+            context_summary_length: Target summary length for compressed messages.
+            context_lm_max_tokens: Maximum tokens for context compression LM calls.
         """
         self.lm_studio_client = lm_studio_client
         self.temperature = temperature
@@ -71,6 +84,14 @@ class MessageProcessor:
         self._memory_manager = memory_manager
         self._memory_recall_limit = memory_recall_limit
 
+        # Context management settings
+        self._context_compression_enabled = context_compression_enabled
+        self._context_token_threshold = context_token_threshold
+        self._context_message_threshold = context_message_threshold
+        self._context_messages_to_keep_fresh = context_messages_to_keep_fresh
+        self._context_summary_length = context_summary_length
+        self._context_lm_max_tokens = context_lm_max_tokens
+
     def set_params(self, temperature: float = 0.7, max_tokens: int = 2500) -> None:
         """Set LM Studio parameters."""
         self.temperature = temperature
@@ -81,6 +102,38 @@ class MessageProcessor:
         """Set the list of tools."""
         self._tools = tools
         self._lm_caller.update_params(tools=tools)
+
+    def apply_tools_config(
+        self,
+        context_compression_enabled: bool = True,
+        context_token_threshold: int = 80,
+        context_message_threshold: int = 20,
+        context_messages_to_keep_fresh: int = 6,
+        context_summary_length: int = 300,
+        context_lm_max_tokens: int = 4096
+    ) -> None:
+        """Apply context compression configuration changes.
+        
+        Args:
+            context_compression_enabled: Whether automatic context compression is enabled.
+            context_token_threshold: Token percentage threshold to trigger compression.
+            context_message_threshold: Message count threshold to trigger compression.
+            context_messages_to_keep_fresh: Number of recent messages to keep uncompressed.
+            context_summary_length: Target summary length for compressed messages.
+            context_lm_max_tokens: Maximum tokens for context compression LM calls.
+        """
+        self._context_compression_enabled = context_compression_enabled
+        self._context_token_threshold = context_token_threshold
+        self._context_message_threshold = context_message_threshold
+        self._context_messages_to_keep_fresh = context_messages_to_keep_fresh
+        self._context_summary_length = context_summary_length
+        self._context_lm_max_tokens = context_lm_max_tokens
+        logger.info(
+            f"Context compression config updated: enabled={context_compression_enabled}, "
+            f"token_threshold={context_token_threshold}%, message_threshold={context_message_threshold}, "
+            f"keep_fresh={context_messages_to_keep_fresh}, summary_length={context_summary_length}, "
+            f"lm_max_tokens={context_lm_max_tokens}"
+        )
 
     # --- Core Processing Logic ---
 
@@ -148,6 +201,15 @@ class MessageProcessor:
                 # Insert memory context after the system prompt (index 0)
                 messages_for_lm.insert(1, {"role": "user", "content": memory_context})
                 logger.info(f"Injected {len(messages_for_lm)} messages (including memory context) for channel {channel_id}")
+
+        # --- Auto-Trigger Context Compression (FEAT-008) ---
+        # Check if context compression is needed before making the LM call.
+        # This prevents context overload by compressing old messages when
+        # both token threshold and message count threshold are exceeded.
+        compression_point = self.check_context_compression_needed(messages_for_lm)
+        if compression_point is not None:
+            logger.info(f"[auto_compress] Context compression needed at index {compression_point} for channel {channel_id}")
+            messages_for_lm = await self._auto_compress_context(messages_for_lm, channel, compression_point, call_lm_studio_func)
 
         await typing_callback(channel)
 
@@ -515,7 +577,7 @@ class MessageProcessor:
 
             # Track total tool calls to prevent infinite tool-calling loops
             total_tool_calls_in_session = 0
-            MAX_TOOL_CALLS_PER_SESSION = 3
+            MAX_TOOL_CALLS_PER_SESSION = 10  # Increased to accommodate batched summarization (2+ LM calls per tool execution)
             force_response_break = False  # Flag to indicate we broke due to max tool calls
             # Track per-tool-type call counts to prevent specific tool infinite loops
             # Increased from 3 to 5 to allow LM more attempts to find relevant context
@@ -676,11 +738,35 @@ class MessageProcessor:
                 
                 if total_tool_calls_in_session >= MAX_TOOL_CALLS_PER_SESSION:
                     logger.warning(f"Max tool calls ({MAX_TOOL_CALLS_PER_SESSION}) reached for channel {channel_id}, forcing response")
-                    # Add a hint message to prompt the model to respond
-                    messages_for_lm.append({
-                        "role": "user",
-                        "content": "You have enough information. Please respond to the user now with your answer. Do NOT call any more tools."
-                    })
+                    
+                    # BUG-SEARCH-006 FIX: Inject actual tool results into context so LM can form
+                    # a meaningful response instead of just a generic hint message.
+                    # Extract the most recent tool results from conversation history.
+                    tool_results = []
+                    for msg in reversed(messages_for_lm[-15:]):
+                        if msg.get("role") == "tool" and msg.get("content"):
+                            content = msg["content"]
+                            if isinstance(content, str) and content.strip():
+                                tool_results.append(content.strip())
+                    
+                    if tool_results:
+                        # Inject actual gathered data for the LM to use in its response
+                        injection_msg = (
+                            "⚠️ You have gathered enough information. You already have tool results "
+                            "from your previous calls. Please respond to the user NOW using the "
+                            "information you already collected. DO NOT call any more tools.\n\n"
+                            "=== PREVIOUSLY GATHERED RESULTS ===\n"
+                            + "\n\n".join(tool_results[-5:])  # Last 5 tool results max
+                            + "\n\n=== END RESULTS ===\n\n"
+                            "Respond with a natural answer based on the results above."
+                        )
+                        logger.info(f"[force_response] Injected {len(tool_results)} tool results for force-response")
+                    else:
+                        injection_msg = (
+                            "You have enough information. Please respond to the user now with your answer. "
+                            "Do NOT call any more tools."
+                        )
+                    messages_for_lm.append({"role": "user", "content": injection_msg})
                     force_response_break = True
                     break
 
@@ -1408,6 +1494,125 @@ class MessageProcessor:
             logger.warning(f"Failed to recall memories for query '{query[:50]}...': {e}")
             return None
 
+    # --- Context Compression ---
+
+    def _estimate_tokens(self, messages: List[Dict]) -> int:
+        """Estimate total token count for a list of messages.
+        
+        Simple heuristic: ~4 characters per token, plus overhead for structure.
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+            
+        Returns:
+            Estimated total token count
+        """
+        total_chars = 0
+        for msg in messages:
+            content = msg.get("content", "")
+            if content:
+                total_chars += len(content)
+            # Add overhead for role tags and structure
+            total_chars += len(msg.get("role", "")) + 20  # role + structure overhead
+        # Rough estimate: 4 characters per token
+        return max(1, int(total_chars / 4))
+
+    def check_context_compression_needed(self, messages: List[Dict]) -> Optional[int]:
+        """Check if context compression is needed and return compression point.
+        
+        Evaluates whether conversation history exceeds thresholds that warrant
+        automatic context compression.
+        
+        Args:
+            messages: Current conversation messages list
+            
+        Returns:
+            Index to compress before if compression needed, None otherwise.
+            Returns the index where compression should start - all messages
+            before this index will be compressed into a summary.
+        """
+        if not self._context_compression_enabled:
+            return None
+
+        if not messages or len(messages) <= self._context_message_threshold:
+            return None
+
+        # Check token threshold
+        estimated_tokens = self._estimate_tokens(messages)
+        # Rough estimate of max tokens: assume ~1000 tokens per message on average
+        max_estimated_tokens = len(messages) * 100
+        token_percentage = (estimated_tokens / max(1, max_estimated_tokens)) * 100
+
+        if token_percentage < self._context_token_threshold:
+            return None
+
+        # Calculate compression point: keep recent messages fresh
+        num_recent = min(self._context_messages_to_keep_fresh, len(messages))
+        compression_point = len(messages) - num_recent
+
+        # Don't compress if there's nothing to compress
+        if compression_point <= 1:
+            return None
+
+        logger.info(
+            f"Context compression triggered: {len(messages)} messages, "
+            f"~{estimated_tokens} tokens, compression point: {compression_point}"
+        )
+        return compression_point
+
+    def compress_context_in_messages(self, messages: List[Dict], compression_point: int,
+                                      summary: str) -> List[Dict]:
+        """Replace old messages with a compressed summary in the conversation list.
+        
+        Args:
+            messages: Current conversation messages list (modified in place)
+            compression_point: Index before which messages should be compressed
+            summary: The compressed summary string to insert
+            
+        Returns:
+            Modified messages list with compression marker inserted
+        """
+        if compression_point <= 0 or compression_point >= len(messages):
+            return messages
+
+        # Extract the compressed portion (messages before compression point)
+        compressed_messages = messages[:compression_point]
+        # Keep recent messages as-is
+        recent_messages = messages[compression_point:]
+
+        # Build a brief summary of compressed messages
+        user_msgs = [m for m in compressed_messages if m.get("role") == "user"]
+        assistant_msgs = [m for m in compressed_messages if m.get("role") == "assistant"]
+
+        summary_parts = []
+        if user_msgs:
+            summary_parts.append(f"{len(user_msgs)} user messages")
+        if assistant_msgs:
+            summary_parts.append(f"{len(assistant_msgs)} assistant messages")
+        summary_detail = f"Compressed {', '.join(summary_parts)}. " if summary_parts else ""
+
+        full_summary = (
+            f"[CONTEXT: {summary_detail}Conversation history from message index 0 to "
+            f"{compression_point - 1} has been compressed to save context space. "
+            f"The conversation covered multiple topics and turns. "
+            f"Recent messages from index {compression_point} onwards are preserved in full. "
+            f"Summary length: {len(summary)} characters.]"
+        )
+
+        # Truncate to target summary length if needed
+        max_summary_len = self._context_summary_length
+        if len(full_summary) > max_summary_len:
+            full_summary = full_summary[:max_summary_len - 3] + "..."
+
+        # Replace compressed portion with summary as a special system message
+        compressed_messages = [{
+            "role": "system",
+            "content": full_summary
+        }]
+
+        # Combine compressed portion + recent messages
+        return compressed_messages + recent_messages
+
     async def _send_cancelled_response(self, channel: Any) -> None:
         """Send a cancellation confirmation message to Discord.
         
@@ -1418,3 +1623,130 @@ class MessageProcessor:
             await channel.send("⚠️ Operation cancelled. I'm no longer processing that request.")
         except Exception as e:
             logger.error(f"Failed to send cancellation message: {e}")
+
+    # --- Auto-Compression (FEAT-008) ---
+
+    async def _auto_compress_context(
+        self,
+        messages: List[Dict],
+        channel: Any,
+        compression_point: int,
+        call_lm_studio_func: Optional[Callable] = None
+    ) -> List[Dict]:
+        """Automatically compress conversation context using LM-based summarization.
+        
+        Sends messages before compression_point to LM Studio for summarization,
+        then replaces them with a compact summary message.
+        
+        Args:
+            messages: Current conversation messages list
+            channel: Discord channel for typing indicator
+            compression_point: Index where compression should start
+            call_lm_studio_func: Optional callable for LM API call
+            
+        Returns:
+            Modified messages list with compressed summary
+        """
+        if compression_point <= 0 or compression_point >= len(messages):
+            return messages
+
+        # Extract messages to compress (everything before compression_point)
+        messages_to_compress = messages[:compression_point]
+        recent_messages = messages[compression_point:]
+
+        # Build a summarization prompt for the LM
+        summarization_prompt = self._build_context_summarization_prompt(messages_to_compress)
+
+        # Call LM Studio for summarization
+        summary = None
+        try:
+            if call_lm_studio_func:
+                summary_response = await call_lm_studio_func(
+                    [{"role": "user", "content": summarization_prompt}],
+                    tools=[],
+                    temperature=0.3,
+                    max_tokens=self._context_lm_max_tokens,
+                    channel_id=None,
+                    use_tool_calling=False
+                )
+            else:
+                summary_response = await self._lm_caller.call(
+                    [{"role": "user", "content": summarization_prompt}],
+                    channel_id=None,
+                    use_tool_calling=False,
+                    max_tokens=self._context_lm_max_tokens
+                )
+
+            choices = summary_response.get("choices", [])
+            if choices:
+                summary = choices[0].get("message", {}).get("content", "")
+                if summary and summary.strip():
+                    logger.info(f"[auto_compress] LM summary generated: {len(summary)} chars")
+                else:
+                    summary = None
+
+        except Exception as e:
+            logger.error(f"[auto_compress] Failed to get LM summary: {e}")
+
+        # Fallback: if LM summarization failed, use a concise placeholder
+        if not summary:
+            user_msgs = [m for m in messages_to_compress if m.get("role") == "user"]
+            assistant_msgs = [m for m in messages_to_compress if m.get("role") == "assistant"]
+            summary = (
+                f"[CONTEXT: Compressed {len(user_msgs)} user messages and "
+                f"{len(assistant_msgs)} assistant messages. "
+                f"Conversation covered multiple topics from message index 0 to "
+                f"{compression_point - 1}. Recent messages preserved from index {compression_point}.]"
+            )
+            logger.info(f"[auto_compress] Used fallback summary: {len(summary)} chars")
+
+        # Build compressed message
+        compressed_msg = {
+            "role": "system",
+            "content": f"[CONTEXT SUMMARY]\n{summary}"
+        }
+
+        # Replace compressed portion with summary
+        new_messages = [compressed_msg] + recent_messages
+        logger.info(
+            f"[auto_compress] Context compressed: {len(messages)} -> {len(new_messages)} messages "
+            f"(compressed {compression_point} messages into 1 summary)"
+        )
+        return new_messages
+
+    def _build_context_summarization_prompt(self, messages_to_compress: List[Dict]) -> str:
+        """Build a prompt for the LM to summarize conversation messages.
+        
+        Args:
+            messages_to_compress: List of message dicts to summarize
+            
+        Returns:
+            A prompt string for the LM to summarize the messages
+        """
+        # Format messages for summarization
+        formatted = []
+        for msg in messages_to_compress:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if role in ("user", "assistant"):
+                formatted.append(f"{role}: {content}")
+            elif role == "system":
+                formatted.append(f"[SYSTEM]: {content}")
+
+        conversation_text = "\n\n".join(formatted)
+
+        # Truncate if extremely long (safety limit)
+        max_text_length = 4000
+        if len(conversation_text) > max_text_length:
+            conversation_text = conversation_text[:max_text_length] + "\n\n[...truncated...]"
+
+        prompt = (
+            "You are a conversation summarizer. Summarize the following conversation excerpt. "
+            "Focus on: who is talking to whom, what topics are discussed, what information is shared, "
+            "and what is resolved vs ongoing. Keep the summary concise and informative.\n\n"
+            f"=== CONVERSATION EXCERPT ===\n{conversation_text}\n=== END EXCERPT ===\n\n"
+            "IMPORTANT: If any messages contain image URLs, file references, or important data, "
+            "mention them specifically in the summary. Format: 'Images found: [URL1], [URL2]'\n\n"
+            "Provide a concise summary (target: 200-300 characters)."
+        )
+        return prompt

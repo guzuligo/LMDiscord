@@ -10,6 +10,61 @@ const debugState = {
     lastLogApiResponse: null
 };
 
+// ==================== Test Tools Toggle ====================
+
+async function toggleTestTools(enabled) {
+    try {
+        const response = await fetch('/api/settings/test_tools', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: enabled })
+        });
+        const data = await response.json();
+        
+        const statusEl = document.getElementById('testToolsStatus');
+        if (statusEl) {
+            if (data.success) {
+                statusEl.style.color = '#a6e3a1';
+                statusEl.textContent = enabled ? '✅ Test tools enabled' : '⚪ Test tools disabled';
+                setTimeout(() => { statusEl.style.color = '#a6adc8'; }, 3000);
+            } else {
+                statusEl.style.color = '#f38ba8';
+                statusEl.textContent = `❌ Error: ${data.error}`;
+                setTimeout(() => { statusEl.style.color = '#a6adc8'; }, 5000);
+            }
+        }
+    } catch (e) {
+        const statusEl = document.getElementById('testToolsStatus');
+        if (statusEl) {
+            statusEl.style.color = '#f38ba8';
+            statusEl.textContent = `❌ Error: ${e.message}`;
+            setTimeout(() => { statusEl.style.color = '#a6adc8'; }, 5000);
+        }
+    }
+}
+
+async function loadTestToolsState() {
+    try {
+        const response = await fetch('/api/settings/test_tools');
+        const data = await response.json();
+        const toggle = document.getElementById('testToolsToggle');
+        const statusEl = document.getElementById('testToolsStatus');
+        
+        if (toggle) {
+            toggle.checked = data.enabled;
+        }
+        if (statusEl) {
+            statusEl.textContent = data.enabled ? '✅ Test tools enabled' : '⚪ Test tools disabled';
+        }
+    } catch (e) {
+        const statusEl = document.getElementById('testToolsStatus');
+        if (statusEl) {
+            statusEl.textContent = `❌ Error: ${e.message}`;
+            statusEl.style.color = '#f38ba8';
+        }
+    }
+}
+
 // ==================== Initialization ====================
 
 window.addEventListener('load', async () => {
@@ -23,6 +78,9 @@ window.addEventListener('load', async () => {
     
     // Load module filter setting
     await loadModuleFilter();
+    
+    // Load test tools state
+    await loadTestToolsState();
     
     // Add a test log entry to verify log display is working
     await testLogDisplay();

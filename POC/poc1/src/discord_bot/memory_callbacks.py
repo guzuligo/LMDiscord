@@ -53,7 +53,12 @@ class MemoryCallbackHandler:
         author_name: str,
         bot_instance: Any
     ) -> None:
-        """Handle session start: inject wake-up memory into system prompt.
+        """Handle session start: inject wake-up memory and recent channel context.
+
+        This implements the session start context initialization for FEAT-008:
+        1. Inject wake-up memory into system prompt
+        2. Fetch recent channel messages and generate a context summary
+        3. Add the summary to the system prompt for better context awareness
 
         Args:
             channel_id: Discord channel ID
@@ -65,24 +70,137 @@ class MemoryCallbackHandler:
             return
 
         try:
-            # Build a short "wake-up" prompt from recent/relevant memories
+            # Step 1: Build a short "wake-up" prompt from recent/relevant memories
             wake_up = self._memory_manager.get_wake_up_prompt(
                 user_id=user_id,
                 channel_id=str(channel_id),
             )
-            if wake_up:
-                # Append wake-up context to the bot's system prompt
-                bot_instance.system_prompt = f"{bot_instance.system_prompt}\n\n{wake_up}"
+
+            # Step 2: Fetch recent channel messages for context (FEAT-008)
+            channel_context = None
+            try:
+                channel_context = await self._fetch_recent_channel_context(
+                    bot_instance, channel_id
+                )
+            except Exception as ctx_err:
+                logger.warning(f"Failed to fetch recent channel context for channel {channel_id}: {ctx_err}")
+
+            # Step 3: Combine wake-up memory + channel context into system prompt
+            combined_context = wake_up or ""
+            if channel_context:
+                combined_context = f"{combined_context}\n\n{channel_context}" if combined_context else channel_context
+
+            if combined_context:
+                # Append context to the bot's system prompt
+                bot_instance.system_prompt = f"{bot_instance.system_prompt}\n\n{combined_context}"
                 # Rebuild the conversation history with updated system prompt
                 # (first message is the system prompt)
                 history = bot_instance._conversation_history.get(channel_id, [])
                 if history and history[0].get("role") == "system":
                     history[0]["content"] = bot_instance.system_prompt
-                logger.info(f"Injected wake-up memory for channel {channel_id}")
+                logger.info(f"Injected session context for channel {channel_id}")
             else:
-                logger.info(f"No wake-up memory for channel {channel_id}")
+                logger.info(f"No session context for channel {channel_id}")
         except Exception as e:
-            logger.warning(f"Failed to inject wake-up memory for channel {channel_id}: {e}")
+            logger.warning(f"Failed to inject session context for channel {channel_id}: {e}")
+
+    async def _fetch_recent_channel_context(
+        self,
+        bot_instance: Any,
+        channel_id: int,
+        recent_count: int = 10
+    ) -> Optional[str]:
+        """Fetch recent channel messages and generate a context summary.
+
+        This implements the session start context initialization for FEAT-008:
+        When a new session starts, we fetch the last N messages from the
+        channel and generate a concise summary to provide the bot with
+        recent conversation context.
+
+        Args:
+            bot_instance: Reference to the DiscordBot instance
+            channel_id: Discord channel ID
+            recent_count: Number of recent messages to fetch (default 10)
+
+        Returns:
+            Formatted context string, or None if no context available
+        """
+        import discord
+        from datetime import datetime, timedelta, timezone
+
+        # Find the channel
+        target_channel = None
+        if bot_instance.client and bot_instance.client.is_ready():
+            target_channel = bot_instance.client.get_channel(channel_id)
+            if target_channel is None:
+                # Try to get channel from guild
+                for guild in bot_instance.client.guilds:
+                    if guild is None:
+                        continue
+                    target_channel = guild.get_channel(channel_id) or guild.get_text_channel(channel_id)
+                    if target_channel:
+                        break
+
+        if target_channel is None:
+            logger.debug(f"Channel {channel_id} not accessible for context fetch")
+            return None
+
+        if not hasattr(target_channel, 'history'):
+            logger.debug(f"Channel {channel_id} does not support history fetch")
+            return None
+
+        # Fetch recent messages
+        recent_messages = []
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)  # Last 24 hours only
+
+        try:
+            async for msg in target_channel.history(limit=recent_count * 2):
+                # Skip bot's own messages and messages older than 24 hours
+                if msg.author == bot_instance.client.user:
+                    continue
+                if msg.created_at < cutoff_time:
+                    continue
+
+                # Format message
+                author = msg.author.display_name or msg.author.name
+                content = (msg.content or "").strip()
+                if not content and not msg.attachments:
+                    continue
+
+                # Truncate very long messages
+                if len(content) > 300:
+                    content = content[:297] + "..."
+
+                recent_messages.append({
+                    "author": author,
+                    "content": content,
+                    "timestamp": msg.created_at.isoformat(),
+                    "has_attachments": len(list(msg.attachments)) > 0
+                })
+
+                if len(recent_messages) >= recent_count:
+                    break
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch recent messages from channel {channel_id}: {e}")
+            return None
+
+        if not recent_messages:
+            return None
+
+        # Format context block
+        context_lines = []
+        context_lines.append(f"📋 [RECENT CHANNEL CONTEXT: Last {len(recent_messages)} messages]")
+
+        for i, msg in enumerate(recent_messages, 1):
+            has_media = " [media]" if msg["has_attachments"] else ""
+            context_lines.append(
+                f"  [{i}] {msg['author']}: {msg['content']}{has_media}"
+            )
+
+        context_text = "\n".join(context_lines)
+        logger.info(f"Fetched {len(recent_messages)} recent messages for channel {channel_id} context")
+        return context_text
 
     async def on_session_ended(
         self,

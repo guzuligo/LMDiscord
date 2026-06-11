@@ -625,6 +625,29 @@ async function loadToolsConfig() {
             
             const useToolCalling = document.getElementById('toolsUseToolCalling');
             if (useToolCalling) useToolCalling.checked = cfg.use_tool_calling;
+
+            // Context Compression settings
+            const contextCompressionEnabled = document.getElementById('contextCompressionEnabled');
+            if (contextCompressionEnabled) contextCompressionEnabled.checked = cfg.context_compression_enabled;
+
+            const contextTokenThreshold = document.getElementById('contextTokenThreshold');
+            if (contextTokenThreshold) {
+                contextTokenThreshold.value = cfg.context_token_threshold;
+                const tokenThresholdValue = document.getElementById('contextTokenThresholdValue');
+                if (tokenThresholdValue) tokenThresholdValue.textContent = cfg.context_token_threshold;
+            }
+
+            const contextMessageThreshold = document.getElementById('contextMessageThreshold');
+            if (contextMessageThreshold) contextMessageThreshold.value = cfg.context_message_threshold;
+
+            const contextMessagesToKeepFresh = document.getElementById('contextMessagesToKeepFresh');
+            if (contextMessagesToKeepFresh) contextMessagesToKeepFresh.value = cfg.context_messages_to_keep_fresh;
+
+            const contextSummaryLength = document.getElementById('contextSummaryLength');
+            if (contextSummaryLength) contextSummaryLength.value = cfg.context_summary_length;
+
+            const contextLmMaxTokens = document.getElementById('contextLmMaxTokens');
+            if (contextLmMaxTokens) contextLmMaxTokens.value = cfg.context_lm_max_tokens;
             
             updateToolsConfigStatusText('Loaded');
         }
@@ -640,7 +663,14 @@ async function saveToolsConfig() {
         tool_max_tokens: parseInt(document.getElementById('toolMaxTokens').value),
         tool_temperature: parseFloat(document.getElementById('toolTemperature').value),
         final_max_tokens: parseInt(document.getElementById('finalMaxTokens').value),
-        use_tool_calling: document.getElementById('toolsUseToolCalling').checked
+        use_tool_calling: document.getElementById('toolsUseToolCalling').checked,
+        // Context Compression settings
+        context_compression_enabled: document.getElementById('contextCompressionEnabled').checked,
+        context_token_threshold: parseInt(document.getElementById('contextTokenThreshold').value),
+        context_message_threshold: parseInt(document.getElementById('contextMessageThreshold').value),
+        context_messages_to_keep_fresh: parseInt(document.getElementById('contextMessagesToKeepFresh').value),
+        context_summary_length: parseInt(document.getElementById('contextSummaryLength').value),
+        context_lm_max_tokens: parseInt(document.getElementById('contextLmMaxTokens').value)
     };
     
     try {
@@ -679,6 +709,29 @@ async function resetToolsConfig() {
     
     const useToolCalling = document.getElementById('toolsUseToolCalling');
     if (useToolCalling) useToolCalling.checked = true;
+
+    // Context Compression defaults
+    const contextCompressionEnabled = document.getElementById('contextCompressionEnabled');
+    if (contextCompressionEnabled) contextCompressionEnabled.checked = true;
+
+    const contextTokenThreshold = document.getElementById('contextTokenThreshold');
+    if (contextTokenThreshold) {
+        contextTokenThreshold.value = 80;
+        const tokenThresholdValue = document.getElementById('contextTokenThresholdValue');
+        if (tokenThresholdValue) tokenThresholdValue.textContent = '80';
+    }
+
+    const contextMessageThreshold = document.getElementById('contextMessageThreshold');
+    if (contextMessageThreshold) contextMessageThreshold.value = 20;
+
+    const contextMessagesToKeepFresh = document.getElementById('contextMessagesToKeepFresh');
+    if (contextMessagesToKeepFresh) contextMessagesToKeepFresh.value = 6;
+
+    const contextSummaryLength = document.getElementById('contextSummaryLength');
+    if (contextSummaryLength) contextSummaryLength.value = 300;
+
+    const contextLmMaxTokens = document.getElementById('contextLmMaxTokens');
+    if (contextLmMaxTokens) contextLmMaxTokens.value = 4096;
     
     updateToolsConfigStatusText('Reset to defaults - click Save to apply');
 }

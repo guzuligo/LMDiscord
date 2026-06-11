@@ -220,6 +220,19 @@ class SafeImageDownloader:
                     logger.warning(f"Original URL also failed: {fallback_error}")
                     # Continue to error handling below
 
+            # Handle content-type mismatch — CDN may have returned an error page (text/plain)
+            # This commonly happens when CDN URLs have expired. Try with Referer header before giving up.
+            if hostname in DISCORD_CDN_HOSTS and isinstance(e, ValueError) and "content type" in error_str:
+                logger.warning(f"Content-type mismatch for {url}: {error_str}, retrying with Referer header")
+                try:
+                    referer_headers = {"Referer": "https://discord.com", "Origin": "https://discord.com"}
+                    raw_bytes = await self._download_with_session(url, headers=referer_headers)
+                    logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} with Referer+Origin headers (content-type retry)")
+                    return raw_bytes
+                except Exception as retry_error:
+                    logger.warning(f"Referer retry also failed for {url}: {retry_error}")
+                    # Continue to 403/404 handling below
+
             # Handle 403 Forbidden — expired authentication token
             # This is the primary symptom of stale CDN URLs from old message embeds.
             # Strip query params and retry once, as the base URL may still be accessible.
@@ -243,18 +256,6 @@ class SafeImageDownloader:
             # (Discord sometimes returns HTML error pages that pass initial checks)
             if hostname in ("cdn.discordapp.com", "media.discordapp.net") and ("404" in error_str or "not found" in error_str):
                 logger.info(f"Got 404 for {url}, retrying with Referer header (image may have been deleted/moved)")
-                try:
-                    referer_headers = {"Referer": "https://discord.com"}
-                    raw_bytes = await self._download_with_session(url, headers=referer_headers)
-                    logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} with Referer header")
-                    return raw_bytes
-                except Exception as retry_error:
-                    logger.warning(f"Retry with Referer also failed for {url}: {retry_error}")
-                    raise ValueError(f"Image not found (404) even with Referer retry: {url}") from e
-            # Additional retry: if content type is text/html, the CDN may have returned
-            # an error page. Retry with Referer header as a fallback.
-            if hostname in ("cdn.discordapp.com", "media.discordapp.net") and isinstance(e, ValueError) and "content type" in error_str:
-                logger.info(f"Got unexpected content type for {url}, retrying with Referer header")
                 try:
                     referer_headers = {"Referer": "https://discord.com"}
                     raw_bytes = await self._download_with_session(url, headers=referer_headers)

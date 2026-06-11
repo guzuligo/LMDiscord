@@ -1,6 +1,117 @@
-# Implemented Progress - POC: test1
+# Completed Progress - POC: test1
 
-> **Implemented entries have been moved here from [implementation_progress.md](implementation_progress.md).** This file contains historical records of all implemented features, fixes, and improvements. Current pending and in-progress items remain in `implementation_progress.md`.
+> **This file contains historical records of all completed (implemented) features, fixes, and improvements.** Items currently being worked on remain in [implementation_progress.md](implementation_progress.md).
+
+---
+
+## BUG-MESSAGE-002 (Image Fetch): Discord CDN Expired URL Retry (2026-06-11)
+
+**Status**: ✅ **COMPLETED**
+
+**Problem**: When the bot tries to fetch images from Discord CDN URLs with expired authentication tokens, the download fails with:
+```
+ValueError: Blocked: disallowed content type 'text/plain' (expected one of {...})
+```
+
+**Root Cause**: Discord CDN URLs contain time-limited query params (`ex=`, `is=`, `hm=`, `token=`) that expire. When expired, the CDN returns an error page (text/plain) instead of the image. The `image_downloader.py` raised ValueError for content-type mismatch BEFORE the Referer retry logic for 403/404 errors could trigger.
+
+**Solution Applied**:
+
+1. **Referer+Origin header retry for content-type errors** in `image_downloader.py`:
+   Added retry logic that triggers BEFORE raising ValueError for content-type mismatches on Discord CDN URLs:
+   ```python
+   if hostname in DISCORD_CDN_HOSTS and isinstance(e, ValueError) and "content type" in error_str:
+       referer_headers = {"Referer": "https://discord.com", "Origin": "https://discord.com"}
+       raw_bytes = await self._download_with_session(url, headers=referer_headers)
+   ```
+
+2. **Fallback to original URL with expiry params**:
+   When the sanitized URL (with expiry params stripped) fails, the code now falls back to the original URL before raising ExpiredTokenError.
+
+3. **403 Forbidden handling with ExpiredTokenError**:
+   When a 403 Forbidden is received, the code now raises `ExpiredTokenError` with a user-friendly message instead of a generic ValueError.
+
+**Files Modified**:
+- `src/discord_bot/image_downloader.py` — Added Referer+Origin header retry for content-type errors, improved fallback chain
+
+**Verification**: Restart the bot and share a message with an image. The bot should now retry with Referer headers before giving up on expired CDN URLs.
+
+---
+
+## BUG-MESSAGE-002: Discord Message Link Fetch Failure (2026-06-11)
+
+**Status**: ✅ **COMPLETED**
+
+**Problem**: When a user shares a Discord message link (e.g., `discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID`), the bot fails to fetch the message content with a 404 error.
+
+**Root Cause**: Two bugs:
+1. The LM Studio model was never instructed to include `message_id` and `channel_id` in its tool call arguments when the user shares a Discord message link.
+2. The fallback mechanism in `tool_executor.py` did not extract these IDs from conversation history.
+
+**Solution Applied**:
+
+1. **System prompt update** in `message_handler.py`:
+   Added instruction to the channel_search tool definition:
+   ```
+   IMPORTANT: If the user shares a Discord message link (e.g., discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID), you MUST include both 'message_id' and 'channel_id' parameters extracted from the link to fetch that specific message directly.
+   ```
+
+2. **Fallback mechanism** in `tool_executor.py`:
+   Added `_extract_message_link_ids_from_history()` static method that scans the last 10 user messages in conversation history for Discord message link patterns:
+   - `discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID`
+   - `discordapp.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID`
+   
+   When `message_id` or `channel_id` are not provided in tool call args, the fallback extracts them from conversation history automatically.
+
+**Files Modified**:
+- `src/discord_bot/message_handler.py` — Added message_id/channel_id instruction to system prompt
+- `src/discord_bot/tool_executor.py` — Added `_extract_message_link_ids_from_history()` method and fallback logic in `_handle_channel_search()`
+
+**Verification**: Restart the bot and share a Discord message link. The bot should now successfully fetch the message content without 404 errors.
+
+---
+
+## BUG-MESSAGE-003: Image Fetch Fails for Discord Message Links (2026-06-11)
+
+**Status**: ✅ **COMPLETED**
+
+**Problem**: The bot is able to fetch images from Discord messages when the user uses reply, but fails to fetch images when a link is provided to that message.
+
+**Root Cause**: Two bugs:
+1. **Wrong regex group indices** in `extract_images_from_message_links()` — `MESSAGE_LINK_PATTERN` has 4 capture groups:
+   - Group 1: `(discord|discordapp)` — domain
+   - Group 2: `(\d+)` — guild_id
+   - Group 3: `(\d+)` — channel_id
+   - Group 4: `(\d+)` — message_id
+   
+   The code was using `match.group(2)` for channel_id (getting guild_id) and `match.group(3)` for message_id (getting channel_id).
+
+2. **Using `_extract_images_from_message()` instead of `extract_image_attachments()`** — The `_extract_images_from_message()` method does NOT include CDN URL refresh logic. When message links are used, the CDN URLs may have expired tokens (`?ex=...&is=...`). The `extract_image_attachments()` method includes `_refresh_expired_image_urls()` which handles this by fetching fresh URLs via the Discord API.
+
+**Solution Applied**:
+
+1. **Fixed regex group indices** in `message_router.py` `extract_images_from_message_links()`:
+   ```python
+   # Before (WRONG):
+   channel_id_str = match.group(2)   # guild_id
+   message_id_str = match.group(3)   # channel_id
+   
+   # After (CORRECT):
+   channel_id_str = match.group(3)   # channel_id
+   message_id_str = match.group(4)   # message_id
+   ```
+
+2. **Unified image extraction on `extract_image_attachments()`** — Changed the message link flow to use `extract_image_attachments()` instead of `_extract_images_from_message()`. This ensures:
+   - CDN URL refresh logic is applied to message link images
+   - Consistent image extraction across reply and link flows
+   - No code duplication
+
+3. **Deprecated `_extract_images_from_message()`** — Marked as deprecated with docstring. The method still exists for backward compatibility with the reply flow (where it receives fresh gateway data anyway).
+
+**Files Modified**:
+- `src/discord_bot/message_router.py` — Fixed regex group indices (lines 408-409), replaced `_extract_images_from_message()` call with `extract_image_attachments()` (line 452), marked `_extract_images_from_message()` as deprecated
+
+**Verification**: Restart the bot and share a Discord message link containing an image. The bot should now successfully extract and display the image.
 
 ---
 

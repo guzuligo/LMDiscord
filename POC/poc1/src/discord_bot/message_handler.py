@@ -141,7 +141,13 @@ class MessageHandler:
         tool_max_tokens: int = 2048,
         tool_temperature: float = 0.3,
         final_max_tokens: int = 8192,
-        use_tool_calling: bool = True
+        use_tool_calling: bool = True,
+        # Context compression settings
+        context_compression_enabled: bool = True,
+        context_token_threshold: int = 80,
+        context_message_threshold: int = 20,
+        context_messages_to_keep_fresh: int = 6,
+        context_summary_length: int = 300
     ) -> None:
         """Apply tools configuration changes.
         
@@ -154,12 +160,34 @@ class MessageHandler:
             tool_temperature: Temperature for tool-calling requests
             final_max_tokens: Max tokens for final responses
             use_tool_calling: Whether tool calling is enabled
+            context_compression_enabled: Whether context compression is enabled
+            context_token_threshold: Token threshold percentage for triggering compression
+            context_message_threshold: Message count threshold for triggering compression
+            context_messages_to_keep_fresh: Number of recent messages to keep uncompressed
+            context_summary_length: Length of compression summaries
         """
         self._reasoning_brevity = reasoning_brevity
         self._tool_max_tokens = tool_max_tokens
         self._tool_temperature = tool_temperature
         self._final_max_tokens = final_max_tokens
         self.use_tool_calling = use_tool_calling
+        
+        # Context compression settings
+        self._context_compression_enabled = context_compression_enabled
+        self._context_token_threshold = context_token_threshold
+        self._context_message_threshold = context_message_threshold
+        self._context_messages_to_keep_fresh = context_messages_to_keep_fresh
+        self._context_summary_length = context_summary_length
+        
+        # Forward to processor if it exists
+        if hasattr(self, '_processor') and self._processor:
+            self._processor.apply_tools_config(
+                context_compression_enabled=context_compression_enabled,
+                context_token_threshold=context_token_threshold,
+                context_message_threshold=context_message_threshold,
+                context_messages_to_keep_fresh=context_messages_to_keep_fresh,
+                context_summary_length=context_summary_length
+            )
 
     def register_tool(self, tool_name: str, tool_instance: Any) -> None:
         """Register a tool instance for execution."""
@@ -234,7 +262,9 @@ class MessageHandler:
             "    - 'this' — search the current active session channel\n"
             "    - leave empty or omit — search ALL visible channels\n"
             "  Optional parameters: limit (default 15, max 50), search_query (text filter), username (author filter), compress_long (truncate long messages)\n"
+            "  IMPORTANT: If the user shares a Discord message link (e.g., discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID), you MUST include both 'message_id' and 'channel_id' parameters extracted from the link to fetch that specific message directly.\n"
             "- 'memory_tool': Call this to search, save, or manage long-term memory. Use 'search' action to recall relevant memories, 'save' to store important information, or 'delete' to remove outdated memories.\n"
+            "- 'context_compress': Call this when conversation history grows too large and you need to compress old messages into a summary to free up context space. Use compress_before_index to specify where to start compression. This helps prevent context overload errors.\n"
             "- 'end_session': Call this when the conversation is ending and you want to say goodbye\n\n"
             "IMPORTANT: For channel_search, you can use '#ID' for channel ID, '@name' for channel name, 'this' for current channel, or leave empty to search all channels. You do NOT need to ask the user for channel IDs.\n"
             "IMPORTANT: When channel_search results show 'IMAGES:' with Discord CDN URLs, you can respond naturally about those images — there is no image_describe tool available.\n"

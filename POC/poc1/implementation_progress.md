@@ -204,13 +204,46 @@
 
 ## In-Progress / Pending Implementation
 
-### ⏳ FEAT-008: Context Management System — Channel Search, Session Start Context, Context Compression
+### ✅ SEARCH-001: Enhanced channel_search Username Matching & Increased Default Limit
+
+| Field | Value |
+|-------|-------|
+| **ID** | SEARCH-001 |
+| **Date Implemented** | 2026-06-05 |
+| **Status** | ✅ Implemented |
+| **Description** | Fixed two limitations that prevented the bot from matching official Discord search capabilities for `has: image from: username` queries. |
+
+#### Fix 1: Username Partial Matching with Discriminator Support
+- **Problem**: The `from:` filter did exact match, so `from: BotGuzu#3756` would NOT match author `"BotGuzu"` (Discord usernames stored without discriminator)
+- **Solution**: Added regex-based discriminator stripping (`re.sub(r'#\d{4}$', '', username)`) and partial matching — the filter now matches if the base username is contained in the author or display_name
+- **Files Modified**: 
+  - ✅ `src/tools/builtins/channel_search.py` (lines 403-424: enhanced `from:` filter with discriminator stripping and `in` check)
+  - ✅ `src/discord_bot/bot_core.py` (lines 662-680: enhanced username filter in `get_channel_messages()`)
+
+#### Fix 2: Increased Default Message Fetch Limit
+- **Problem**: Bot only fetched 15 messages by default, while official Discord searches the entire channel history
+- **Solution**: Changed default limit from 15 to 50 (Discord API maximum per request)
+- **Files Modified**:
+  - ✅ `src/discord_bot/bot_core.py` (line 547: changed `limit: int = 15` to `limit: int = 50`)
+
+#### Comparison After Fix
+
+| Feature | Official Discord | LMDiscord Bot (Before) | LMDiscord Bot (After) |
+|---------|-----------------|----------------------|---------------------|
+| `has: image` | Full history | Last 15 messages | Last 50 messages |
+| `from: username` | Partial/fuzzy | Exact match only | Partial match with discriminator support |
+| Message depth | Unlimited | 15 (default) | 50 (default) + sliding window |
+
+---
+
+### ✅ FEAT-008: Context Management System — Channel Search, Session Start Context, Context Compression
 
 | Field | Value |
 |-------|-------|
 | **ID** | FEAT-008 |
 | **Date** | 2026-05-21 |
-| **Status** | ⏳ Partially Implemented (Foundation Complete) |
+| **Date Implemented** | 2026-06-10 |
+| **Status** | ✅ **FULLY IMPLEMENTED** |
 | **Severity** | Medium |
 | **Description** | Three interconnected features for conversation context management. |
 
@@ -218,14 +251,37 @@
 - **File**: `src/tools/builtins/channel_search.py`
 - **Status**: Implemented with sliding window support (CONCEPT-004)
 
-#### Feature 2: Session Start Context Initialization — ⏳ NOT IMPLEMENTED
-- **Flow**: ChannelSearch → LM summarize → Inject `[CHANNEL CONTEXT: ...]` into conversation history
-- **Trigger**: Always at session start
-- **File To Modify**: `bot_core.py` → `_handle_new_session_message()`
+#### Feature 2: Session Start Context Initialization — ✅ IMPLEMENTED (2026-06-10)
+- **Flow**: Fetch recent channel messages → Format as readable list → Inject into system prompt
+- **Implementation**: `memory_callbacks.py` → `_fetch_recent_channel_context()` method
+- **Behavior**: 
+  1. Fetches last 10 messages from Discord channel (skips bot's own messages)
+  2. Filters to last 24 hours only
+  3. Truncates messages to 300 chars
+  4. Includes `[media]` indicator for messages with attachments
+  5. Combined with wake-up memory into system prompt
+- **Output format**: `📋 [RECENT CHANNEL CONTEXT: Last N messages]` with numbered message list
+- **Files Modified**: ✅ `src/discord_bot/memory_callbacks.py` (added `_fetch_recent_channel_context()` method)
 
-#### Feature 3: Context Compression Tool — ⏳ NOT IMPLEMENTED
-- **Tool**: `context_compress(compress_before_message_index, target_summary_length)`
-- **File To Create**: `src/tools/builtins/context_compressor.py`
+#### Feature 3: Context Compression Tool — ✅ FULLY IMPLEMENTED (BUG-CONTEXT-001 FIXED)
+- **Tool**: `context_compress(compress_before_index, target_summary_length, messages_to_keep_fresh)`
+- **File**: `src/tools/builtins/context_compressor.py`
+- **Status**: ✅ **Fully functional with real LM-based summarization**
+- **Fix Applied**: 
+  1. `ContextCompressorTool.execute()` now accepts `messages_for_lm` parameter
+  2. Sends pre-compression messages to LM Studio for real summarization
+  3. `tool_executor.py` passes `messages_for_lm` to compressor
+  4. Compressed messages are replaced with summary in `messages_for_lm`
+- **Auto-Trigger**: Implemented in `message_processor.py` — checks context size after each turn
+- **Thresholds**: Token >80% OR message count >20 triggers automatic compression
+- **Files Modified**: ✅ `src/tools/builtins/context_compressor.py` (real LM summarization), ✅ `src/discord_bot/tool_executor.py` (pass messages_for_lm + replace compressed messages), ✅ `src/discord_bot/message_processor.py` (auto-trigger logic), ✅ `src/discord_bot/message_handler.py` (threshold evaluation), ✅ `src/discord_bot/memory_callbacks.py` (session start context)
+
+#### Mini-Context Handover Fix — ✅ IMPLEMENTED (2026-06-10)
+- **Problem**: Legacy image describe methods in `tool_executor.py` did not support `check_pending` callback, causing the bot to be unable to interrupt image processing when a new message arrives during a new session.
+- **Fix**: Added `check_pending` parameter to `_handle_image_describe_legacy()` method with two interruption points:
+  1. After image download (before processing)
+  2. Before mini-context LM call
+- **Files Modified**: ✅ `src/discord_bot/tool_executor.py` (added `check_pending` support to legacy image describe)
 
 #### Configuration Schema
 ```json
@@ -246,11 +302,13 @@
 }
 ```
 
-#### Remaining Implementation Steps
-1. Implement session start context initialization (Feature 2)
-2. Create `context_compressor.py` (Feature 3)
-3. Update system prompt for context injection
-4. Test full flow
+#### Files Created/Modified (2026-06-10)
+| File | Change |
+|------|--------|
+| `src/discord_bot/memory_callbacks.py` | Added `_fetch_recent_channel_context()` method for session start context initialization |
+| `src/discord_bot/tool_executor.py` | Added `check_pending` support to `_handle_image_describe_legacy()`, fixed `_handle_context_compress()` to pass `messages_for_lm` |
+| `src/discord_bot/message_processor.py` | Added auto-trigger compression logic (context size monitoring) |
+| `src/discord_bot/message_handler.py` | Added `_check_and_trigger_compression()` threshold evaluation |
 
 ---
 
@@ -327,21 +385,30 @@
 
 ```
 src/discord_bot/
-├── bot_core.py              — Main bot orchestration
-├── message_router.py        — Message routing (538 lines)
-├── message_processor.py     — Message processing + tool execution
-├── message_handler.py       — LM Studio interaction + session handling
-├── tool_executor.py         — Tool execution framework
-├── session_manager.py       — Session lifecycle management
-├── cancellation.py          — Cancellation management (228 lines)
-├── image_downloader.py      — Safe image downloading
-├── lm_caller.py             — LM Studio API caller
-├── memory_callbacks.py      — Memory system callbacks
-├── delay_processor.py       — Delayed message processing
-├── token_tracker.py         — Token usage tracking
+├── bot_core.py              — Main bot orchestration, event registration, lifecycle
+├── message_router.py        — Message routing, mention detection, command parsing
+├── message_processor.py     — Message pipeline, batch handling, pending queue management
+├── message_handler.py       — LM Studio interaction, tool calling, image handling, session logic
+├── tool_executor.py         — Tool execution framework (sync/async dispatch)
+├── session_manager.py       — Session lifecycle, timeout cleanup, state queries
+├── cancellation.py          — Cancellation management (task-based)
+├── image_downloader.py      — Safe image downloading from URLs
+├── lm_caller.py             — LM Studio API caller abstraction
+├── memory_callbacks.py      — Memory system callbacks (save on session end)
+├── delay_processor.py       — Delayed message processing for follow-up batching
+├── token_tracker.py         — Token usage tracking per channel for web UI sync
 ├── typing_indicator.py      — Discord typing indicators
-└── user_identity.py         — User identity tracking
+└── user_identity.py         — User identity tracking (display names, mentions)
 ```
+
+**Module Responsibility Summary:**
+| Module | Primary Responsibility | Secondary Responsibility |
+|--------|----------------------|------------------------|
+| `bot_core.py` | Bot lifecycle, event registration | Session state, image extraction |
+| `message_router.py` | Route messages to correct handler | Mention/command detection |
+| `message_processor.py` | Pipeline orchestration, batch handling | Pending queue, race condition prevention |
+| `message_handler.py` | LM Studio interaction, tool calling | Image handling, context management, session logic |
+| `lm_caller.py` | LM Studio API abstraction | Model selection, tool definitions |
 
 ### Memory Module Structure
 
@@ -359,4 +426,4 @@ src/memory/
 
 ---
 
-*Last updated: 2026-06-04*
+*Last updated: 2026-06-10*
