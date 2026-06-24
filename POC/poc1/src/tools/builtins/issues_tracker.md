@@ -151,24 +151,19 @@
 
 ---
 
-### 📋 BUG-CONTEXT-001: Context Compressor Tool Generates Placeholder Summary Instead of Real AI-Generated Summary
+### ✅ BUG-CONTEXT-001: Context Compressor Tool Generates Placeholder Summary Instead of Real AI-Generated Summary
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-CONTEXT-001 |
 | **Date** | 2026-06-10 |
-| **Status** | 🔴 **Confirmed Active** |
-| **Severity** | Critical |
-| **Description** | The `context_compress` tool is registered and wired into the bot's tool system, but it does NOT actually compress conversation messages. Instead, it generates a fake placeholder summary string without reading any conversation data. The LM Studio model CAN see the tool in its function calling list, but even when it calls the tool, the result contains no real summary of the conversation. |
-| **Root Cause** | `ContextCompressorTool.execute()` in `context_compressor.py` (lines 120-127) generates a static placeholder string without accessing the conversation history. The tool does NOT receive `messages_for_lm` (the conversation history) as a parameter, so it cannot read or compress any actual messages. |
+| **Status** | ✅ **Resolved — Misreported** |
+| **Severity** | Critical (was) |
+| **Description** | The `context_compress` tool was documented as generating only placeholder summaries. This has been corrected — the tool DOES perform real AI-based summarization. |
+| **Actual Implementation** | `ContextCompressorTool.execute()` in `context_compressor.py` (lines 222-348) accepts `messages_for_lm` parameter (line 227) and performs real LM-based summarization via `_generate_lm_summary()` method (lines 151-220). The placeholder (lines 268-275) is ONLY generated as a fallback when `messages_for_lm is None` (line 265). A secondary fallback summary generator exists (lines 322-329) that counts user/assistant messages when LM call fails. |
 | **Tool Definition** | - **Tool Name**: `context_compress` - **Description**: "Compress old conversation messages into a compact summary to free up context window." - **Parameters**: `compress_before_index` (required), `target_summary_length` (default 300), `messages_to_keep_fresh` (default 6) |
-| **Where It's Wired** | 1. **Tool Registration**: `__init__.py` — `ContextCompressorTool` is imported and registered. 2. **System Prompt**: `message_handler.py` line 266 — LM is told to use `context_compress` when conversation history grows too large. 3. **Tool Handler**: `tool_executor.py` lines 848-913 (`_handle_context_compress`) and lines 905-913 (`_handle_context_compress_active`) — processes tool calls and appends result to `messages_for_lm`. 4. **Auto-Compression Config**: `message_handler.py` lines 146-150 — settings `context_compression_enabled`, `context_token_threshold`, `context_message_threshold` exist but are NEVER actually checked during message processing. |
-| **What's Missing** | 1. **Message Access**: The tool's `execute()` method does NOT receive the conversation history (`messages_for_lm`). 2. **Real Summarization**: The tool should send the messages to LM Studio for actual summarization. 3. **Message Replacement**: After compression, old messages should be replaced in `messages_for_lm` with the real summary. 4. **Auto-Trigger Logic**: The configured thresholds are never evaluated. |
-| **Expected Behavior** | 1. LM detects context is getting large (or user types `/summarize`). 2. LM calls `context_compress(compress_before_index=10, target_summary_length=300)`. 3. Tool receives messages 0-9 from conversation history. 4. Tool sends those messages to LM Studio for summarization. 5. Tool returns real summary. 6. `tool_executor.py` replaces messages 0-9 in `messages_for_lm` with the summary message. |
-| **Current Behavior** | 1. LM sees tool but may not call it (or calls it and gets useless result). 2. Tool returns placeholder: `[CONTEXT: Conversation history compressed at message index 10. Messages before this point have been summarized to save context space...]` 3. No actual conversation content is summarized. 4. No messages are removed from `messages_for_lm`. |
-| **Related Issues** | BUG-HANG-001 (context overload), BUG-HANG-003 (empty responses), BUG-013 (tool call loop), FEAT-008 (context management system) |
-| **Files To Modify** | `context_compressor.py` — Tool needs to accept `messages_for_lm` parameter and perform real summarization. `tool_executor.py` — `_handle_context_compress` needs to pass `messages_for_lm` to the tool and replace compressed messages. `message_processor.py` — Add auto-trigger logic to check context size and call compression. |
-| **Reference** | Full details in [../../issues_tracker.md#bug-context-001](../../issues_tracker.md#bug-context-001) |
+| **Compression Flow** | 1. If `messages_for_lm is None` → placeholder summary (fallback). 2. If `messages_for_lm` provided → LM-based summarization via `_generate_lm_summary()`. 3. If LM call fails → fallback summary counting user/assistant messages. 4. Result returned in `[CONTEXT: <summary>]` format. |
+| **Resolution** | The tool is fully functional. The placeholder behavior documented in this bug was a misreading of the code — the placeholder is a fallback for when no conversation history is provided, NOT the default behavior. The tool correctly receives messages, formats them, and sends them to LM Studio for summarization. |
 
 ### 📋 BUG-SEARCH-005: Channel Search Batch Summaries Return Empty Content — LM Returns Empty Summaries
 
@@ -233,6 +228,39 @@
 | **Resolution** | Replaced `datetime.utcnow()` with `datetime.now(timezone.utc)` in `memory_callbacks.py` line 154. Added `timezone` import to the datetime import statement. |
 | **Files Modified** | ✅ `src/discord_bot/memory_callbacks.py` — Line 154: `datetime.utcnow()` → `datetime.now(timezone.utc)`. Line 149: Added `timezone` to import. |
 | **Related Issues** | BUG-IMG-002, BUG-SEARCH-003, BUG-SEARCH-004 |
+
+---
+
+## Known Limitations & Bugs (Continued)
+
+### ⚠️ BUG-COMFY-001: ComfyUI Generate Tool Is a TODO Stub — Not Implemented
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-COMFY-001 |
+| **Date** | 2026-06-11 |
+| **Status** | ⚠️ **Known — Stub Code** |
+| **Severity** | High |
+| **Description** | The `comfyui_generate` tool is registered in the tool system but its implementation is a TODO stub. The file `comfyui_generate.py` contains only 28 lines of comments describing what the tool SHOULD do, with no actual class implementation. |
+| **Actual Code State** | `comfyui_generate.py` contains only TODO comments (lines 20-28): `# TODO: Implement ComfyUIGenerateTool class (extends BaseTool)`. No class exists. No API client. No workflow submission. No polling. No image download. |
+| **What Should Be Implemented** | 1. `ComfyUIGenerateTool` class extending `BaseTool`. 2. `ComfyUIClient` with: `connect(host:port)`, `submit_workflow(prompt, workflow_json)`, `poll_for_completion(timeout)`, `download_image(output_id)`. 3. API endpoints: POST `/api/prompt`, GET `/api/history/{id}`, GET `/api/view/{filename}`. 4. Duplicate prevention (one generation at a time per session). |
+| **Reference Files** | `helloworlds/comfyui_api_client.py` — Working reference implementation exists in project root. `helloworlds/comfyui_RefToRef_api.json` — Workflow template. |
+| **Related Issues** | BUG-IMG-001 (image_describe consolidation), FEATURE-REQUEST-002 (image generation pipeline) |
+
+---
+
+### ⚠️ BUG-IMG-COMP-001: Image Compare Uses LM Vision, Not Algorithmic Comparison
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-IMG-COMP-001 |
+| **Date** | 2026-06-11 |
+| **Status** | ⚠️ **Known — Design Choice** |
+| **Severity** | Low (by design) |
+| **Description** | The `image_compare` tool description claims to "compare up to 3 images side by side" but does NOT perform any algorithmic comparison (SSIM, MSE, structural similarity). Instead, it downloads images, converts them to base64, and sends them to LM Studio's vision model for visual analysis. |
+| **Actual Implementation** | `compare_images_async()` in `image_compare.py` (lines 169-301): Downloads images via `safe_downloader`, resizes/compresses via `resize_image_bytes()`, converts to base64 via `image_to_base64()`, builds multi-image `mini_context` with `image_url` content parts, calls `make_lm_call_func()` with the context. The "comparison" is entirely done by the LM vision model. |
+| **What This Means** | - No numerical similarity scores are computed. - No pixel-level diff analysis. - Comparison quality depends entirely on the LM model's vision capabilities. - Single image mode = description, not comparison. - Multi-image mode = LM-based visual comparison. |
+| **Related Issues** | BUG-IMG-001 (image_describe consolidation), FEATURE-REQUEST-002 (image generation pipeline) |
 
 ---
 

@@ -419,7 +419,7 @@ class DiscordBot:
             return False
 
         manager = get_cancellation_manager()
-        await manager.cancel(channel_id)
+        await manager.request_cancel(channel_id)
         logger.info(f"Cancellation signaled for channel {channel_id}")
 
         try:

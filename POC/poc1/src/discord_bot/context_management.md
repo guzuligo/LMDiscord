@@ -7,6 +7,9 @@ A set of tools and procedures that enable the Main Bot to manage conversation co
 2. **Context Compression** — on-demand compression when conversation grows too long
 3. **Channel Search** — foundation tool to fetch and filter recent channel messages
 4. **Mini-Context Handover** — check for pending messages between tool calls during multi-tool execution
+5. **Tool Call Deduplication** — prevent redundant tool executions using hash-based caching
+6. **Delay Processing** — configurable timing between message events to avoid rate limits
+7. **Message Hash Tracking** — SHA256-based duplicate detection for incoming messages
 
 ## Architecture
 
@@ -137,6 +140,40 @@ This creates a poor user experience where the bot seems "deaf" during multi-tool
 **Important**: This bot runs on consumer hardware with GPU limitations. Only ONE bot session can run at a time. When the bot is working on a task, new messages from users are queued and processed sequentially after the current task completes.
 
 The mini-context handover feature allows the bot to temporarily pause its current task to check for new messages between tool calls, without starting a second bot session.
+
+### Pending Message Check During Multi-Tool Processing
+
+During multi-tool execution, a pending message check occurs **between each tool call** to detect if the user has sent a new message. This ensures the bot can respond to user corrections or cancellations without completing all queued tool calls.
+
+**Check Flow:**
+```
+[1] Execute tool 1 (e.g., channel_search)
+    ↓
+[2] Check pending messages (message hash comparison)
+    ├─ Hash unchanged → Continue to tool 2
+    └─ Hash changed → Cancel remaining tools, start new processing cycle
+```
+
+**Implementation Details:**
+- Pending messages tracked via `message_hash` change detection
+- `_pending_messages` dict stores hashes of already-processed messages
+- If user sends a new message (detected via message hash change), remaining tool calls are cancelled
+- A new processing cycle starts with the new message immediately
+- This prevents the bot from completing outdated tool calls after the user has changed their request
+
+**Example Scenario:**
+```
+User: "Search for recent announcements"
+  -> Bot starts: [channel_search(announcements), channel_search(results), image_describe]
+
+[1] Execute channel_search(announcements) -> Found 5 results
+    ↓
+[2] Check pending -> User sent: "Actually search for errors"
+    ↓
+[3] Cancel remaining tools (channel_search, image_describe)
+    ↓
+[4] Start new processing cycle with "Actually search for errors"
+```
 
 ### Solution: Mini-Context Handover
 
@@ -359,6 +396,378 @@ Scenario C: Cancellation needed
 
 ---
 
+---
+
+## Feature 5: Tool Call Deduplication
+
+### Purpose
+Prevent redundant execution of identical tool calls by caching results using content-based hashing. This is especially important for `channel_search` tool calls, where the LM model may return duplicate or near-duplicate search requests.
+
+### Hash-Based Deduplication System
+
+The deduplication system uses SHA256 hashing to uniquely identify tool calls and cache their results.
+
+###  _is_duplicate_tool_call() Method
+
+```python
+def _is_duplicate_tool_call(self, tool_name, tool_arguments):
+    # Create unique key from tool name and arguments
+    key_data = json.dumps({"tool": tool_name, "args": tool_arguments}, sort_keys=True)
+    tool_hash = hashlib.sha256(key_data.encode()).hexdigest()
+
+    # Check if we have a cached result
+    if tool_hash in self._tool_cache:
+        return True
+    return False
+```
+
+**Key Generation:**
+- Combines tool name and arguments into a structured dictionary
+- Serializes to JSON with sorted keys for consistent hashing
+- Generates SHA256 hash of the serialized string
+- Same tool name + same arguments = same hash = duplicate detected
+
+#### _cache_tool_result() Method
+
+```python
+def _cache_tool_result(self, tool_name, tool_arguments, result, ttl=300):
+    key_data = json.dumps({"tool": tool_name, "args": tool_arguments}, sort_keys=True)
+    tool_hash = hashlib.sha256(key_data.encode()).hexdigest()
+
+    self._tool_cache[tool_hash] = {
+        "result": result,
+        "timestamp": time.time(),
+        "ttl": ttl,
+        "tool_name": tool_name,
+        "arguments": tool_arguments
+    }
+```
+
+**Cache Entry Structure:**
+| Field | Type | Description |
+|-------|------|-------------|
+| result | Dict | The cached tool execution result |
+| timestamp | float | Unix timestamp when result was cached |
+| ttl | int | Time-to-live in seconds (default: 300 = 5 minutes) |
+| tool_name | str | Original tool name for logging |
+| arguments | Dict | Original tool arguments for debugging |
+
+**TTL Expiration:**
+- Cached results expire after 5 minutes by default
+- Expired entries are cleaned up on access
+- Cache eviction: _cleanup_expired_cache() removes expired entries
+
+### Application to channel_search Tool
+
+The deduplication system is specifically applied to `channel_search` tool calls:
+
+**Use Case 1: Duplicate Search Requests**
+```
+User: "Search for announcements in #general"
+  -> Bot calls: channel_search(channel_id="123", search_query="announcements", channel="general")
+  -> Result cached with hash H1
+
+User: "Search for announcements in #general" (same request)
+  -> Bot detects duplicate via hash H1
+  -> Returns cached result instead of executing tool again
+```
+
+**Use Case 2: LM Model Redundancy**
+```
+LM returns multiple identical tool calls:
+  [channel_search(...), channel_search(...), channel_search(...)]
+
+  [1] First call: Executes tool, caches result
+  [2] Second call: Duplicate detected, returns cached result
+  [3] Third call: Duplicate detected, returns cached result
+```
+
+### Deduplication Flow
+
+```
+Tool Call Received
+    |
+_is_duplicate_tool_call(tool_name, arguments)
+    |
+SHA256 Hash Generation
+    |
+Check _tool_cache for existing hash
+    |-> Hash exists -> Return cached result (NO tool execution)
+    |-> Hash not found -> Execute tool
+                            |
+                    _cache_tool_result(tool_name, arguments, result)
+                            |
+                    Return result to caller
+```
+
+### Configuration
+
+```json
+{
+  "tool_call_deduplication": {
+    "enabled": true,
+    "default_ttl_seconds": 300,
+    "max_cache_size": 100,
+    "applied_to_tools": ["channel_search"]
+  }
+}
+```
+
+### Benefits
+1. **Reduced API calls** - Avoids redundant Discord API requests
+2. **Faster response times** - Cached results returned immediately
+3. **Consistent responses** - Same query always returns same result within TTL
+4. **Lower server load** - Reduces overall system workload
+
+---
+
+## Feature 6: Delay Processing
+
+### Purpose
+Manage configurable delays between message events to prevent Discord API rate limiting and create more natural interaction timing. The delay processor coordinates the sequence of sending typing indicators, response messages, and message deletion.
+
+### delay_processor.py Module
+
+The delay processor provides timed sequencing for message lifecycle events.
+
+#### DelayTask Dataclass
+
+```python
+@dataclass
+class DelayTask:
+    channel_id: str
+    message_id: Optional[str]
+    event_type: str
+    timestamp: float
+```
+
+**Fields:**
+| Field | Type | Description |
+|-------|------|-------------|
+| channel_id | str | Target Discord channel |
+| message_id | Optional[str] | Associated message ID (None for typing events) |
+| event_type | str | Event type: typing, response, delete |
+| timestamp | float | Execution timestamp (time.time() + delay) |
+
+#### Configurable Delay Durations
+
+Default delay durations between message events:
+
+| Event | Default Duration | Description |
+|-------|-----------------|-------------|
+| typing | 1 second | Delay before sending typing indicator |
+| response | 2 seconds | Delay before sending response message |
+| delete | 3 seconds | Delay before deleting the response message |
+
+**Configuration Example:**
+```json
+{
+  "delay_processing": {
+    "durations": {
+      "typing": 1,
+      "response": 2,
+      "delete": 3
+    },
+    "enabled": true
+  }
+}
+```
+
+**Customization:** Durations are configurable via configuration file or environment variables.
+
+#### DelayProcessor Class
+
+```python
+class DelayProcessor:
+    def __init__(self, bot_instance):
+        self._bot = bot_instance
+        self._pending_tasks = defaultdict(list)
+        self._channel_rate_limits = defaultdict(float)
+
+    async def schedule_event(self, channel_id, event_type, message_id=None, delay=None):
+        ...
+
+    async def _process_queue(self, channel_id):
+        ...
+```
+
+#### Per-Channel Rate Limiting
+
+Discord API enforces rate limits per channel. The delay processor tracks rate limits per channel to avoid exceeding these limits.
+
+**Rate Limit Behavior:**
+- Each channel has independent rate limit tracking
+- Minimum interval between events enforced automatically
+- Tasks queued if rate limit would be exceeded
+- Automatic retry when rate limit window expires
+
+#### Message Lifecycle with Delays
+
+```
+Bot decides to respond
+    |
+[1] Schedule typing event (delay: 1s)
+    |
+[2] Send typing indicator
+    |
+[3] Schedule response event (delay: 2s)
+    |
+[4] Send response message
+    |
+[5] Schedule delete event (delay: 3s)
+    |
+[6] Delete response message
+    |
+Complete
+```
+
+**Total Timeline Example:**
+```
+T+0s: Bot decides to respond
+T+1s: Typing indicator sent
+T+3s: Response message sent (1s + 2s)
+T+6s: Response message deleted (1s + 2s + 3s)
+```
+
+### Integration with Message Handler
+
+The delay processor integrates with the message handler to coordinate bot responses.
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Per-channel rate limiting | Discord API limits are per-channel; isolating tracking prevents false positives |
+| Configurable delays | Different use cases may need different timing |
+| DelayTask dataclass | Clean, type-safe representation of delayed events |
+| Async processing | Non-blocking delay execution does not interfere with message processing |
+
+---
+
+## Feature 7: Message Hash Tracking
+
+### Purpose
+Prevent duplicate processing of the same message using SHA256 content hashing. This ensures each Discord message is processed exactly once, even if received multiple times due to network retries or gateway events.
+
+### SHA256 Hash-Based Duplicate Detection
+
+Every incoming message content is hashed using SHA256 to create a unique identifier for duplicate detection.
+
+#### Message Hash Generation
+
+```python
+import hashlib
+
+def generate_message_hash(content):
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+```
+
+**Properties:**
+- Same content -> Same hash (deterministic)
+- Different content -> Different hash (collision-resistant)
+- Fixed-length output (64 hex characters)
+- Content-agnostic (works for any message type)
+
+#### Pending Messages Tracking
+
+The `_pending_messages` dictionary tracks message hashes to prevent duplicate processing:
+
+```python
+self._pending_messages = {}
+
+class MessageMetadata:
+    def __init__(self, message_id, content_hash, timestamp):
+        self.message_id = message_id
+        self.content_hash = content_hash
+        self.timestamp = timestamp
+        self.processed = False
+```
+
+**Tracking Structure:**
+| Field | Type | Description |
+|-------|------|-------------|
+| message_id | str | Discord message ID |
+| content_hash | str | SHA256 hash of message content |
+| timestamp | float | When message was first received |
+| processed | bool | Whether message has been fully processed |
+
+#### Duplicate Detection Flow
+
+```
+Incoming Message Received
+    |
+Generate content_hash = SHA256(message_content)
+    |
+Check _pending_messages for content_hash
+    |-> Hash exists + Not processed -> Queue for reprocessing
+    |-> Hash exists + Processed -> Skip (duplicate detected)
+    |-> Hash not found -> Process normally
+                            |
+                    Add to _pending_messages with content_hash
+                            |
+                    Mark processed = True when complete
+```
+
+#### Implementation Example
+
+```python
+async def handle_message(self, message):
+    content_hash = generate_message_hash(message.content)
+
+    if content_hash in self._pending_messages:
+        existing = self._pending_messages[content_hash]
+        if existing.processed:
+            return  # Skip duplicate
+        self._queue_message(message, content_hash)
+        return
+
+    self._pending_messages[content_hash] = MessageMetadata(
+        message_id=message.id,
+        content_hash=content_hash,
+        timestamp=time.time()
+    )
+
+    await self._process_message(message, content_hash)
+```
+
+### Integration with Pending Message Check
+
+Message hash tracking works in conjunction with the pending message check feature:
+
+```
+Multi-Tool Processing
+    |
+After each tool call: check_pending_messages()
+    |
+Compare current message_hash with _pending_messages
+    |-> Hash changed -> User sent new message, interrupt
+    |-> Hash unchanged -> Continue processing
+```
+
+### Cache Cleanup
+
+Expired message hashes are periodically cleaned up to prevent memory leaks:
+
+```python
+def cleanup_old_hashes(self, max_age=3600):
+    now = time.time()
+    to_remove = [
+        h for h, meta in self._pending_messages.items()
+        if now - meta.timestamp > max_age
+    ]
+    for h in to_remove:
+        del self._pending_messages[h]
+```
+
+### Key Benefits
+
+1. **Network retry resilience** - Duplicate messages from retries are ignored
+2. **Gateway event deduplication** - Discord gateway may send same message twice
+3. **Memory efficient** - Old hashes cleaned up automatically
+4. **Content-based** - Works regardless of message source or channel
+
+---
+
 ## Configuration
 
 ```json
@@ -375,6 +784,20 @@ Scenario C: Cancellation needed
       "messages_to_keep_fresh": 6,
       "default_summary_length": 300
     }
+  },
+  "tool_call_deduplication": {
+    "enabled": true,
+    "default_ttl_seconds": 300,
+    "max_cache_size": 100,
+    "applied_to_tools": ["channel_search"]
+  },
+  "delay_processing": {
+    "durations": {
+      "typing": 1,
+      "response": 2,
+      "delete": 3
+    },
+    "enabled": true
   }
 }
 ```
@@ -405,6 +828,8 @@ Scenario C: Cancellation needed
 | `SessionManager` | Provides session state (active/inactive) |
 | `MessageHandler` | Orchestrates session start context injection |
 | `ToolCallHandler` | Inter-tool-call queue checking for mini-context handover |
+| `DelayProcessor` | Manages timed message events with per-channel rate limiting |
+| `MessageHashTracker` | SHA256-based duplicate detection for incoming messages |
 
 ---
 

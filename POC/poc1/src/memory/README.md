@@ -8,8 +8,10 @@ This module provides a comprehensive memory system for the Discord Bot + LM Stud
 
 | Component | File | Status |
 |-----------|------|--------|
-| Memory Manager | `memory_manager.py` | ✅ Basic implementation |
-| Memory Lite | `memorylite.py` | ✅ SQLite integration |
+| Memory Manager | `memory_manager.py` | ✅ Implemented |
+| Memory Lite | `memorylite.py` | ✅ Implemented |
+| MemoryBot Core | `memorybot.py` | ✅ Implemented |
+| MemoryBot Prompts | `memorybot_prompt.py` | ✅ Implemented |
 
 ## Purpose
 
@@ -24,7 +26,8 @@ memory/
 ├── progress.md                  # Implementation progress tracking
 ├── __init__.py                  # Package init
 ├── memory_manager.py            # Core memory management logic
-├── memorybot.py                 # MemoryBot specialist (planned)
+├── memorybot.py                 # MemoryBot specialist
+├── memorybot_prompt.py          # MemoryBot system prompt templates
 └── memorylite.py                # SQLite-based memory lite integration
 ```
 
@@ -154,7 +157,7 @@ active → superseded (when replaced by a better memory)
 | `src/tools/builtins/memory_tool.py` | Memory tool for LM Studio |
 | `src/discord_bot/bot_core.py` | Bot core integration |
 
-## MemoryBot Architecture (Planned)
+## MemoryBot Architecture (Implemented)
 
 ### Concept
 
@@ -236,14 +239,14 @@ MemoryBot: "[SESSION_END]"
 - **Fallback**: If MemoryBot unavailable, Main Bot calls memory tools directly
 - **MemoryBot memory**: Should MemoryBot remember its own search patterns?
 
-### Planned Files
+### Implemented Files
 
 | File | Purpose |
 |------|---------|
-| `src/memory/memorybot.py` | MemoryBot core logic |
-| `src/memory/memorybot_prompt.py` | System prompt templates |
-| `src/discord_bot/message_handler.py` | Route memory queries to MemoryBot |
-| `src/lm_models/api.py` | Support parallel/concurrent LM calls |
+| `src/memory/memorybot.py` | MemoryBot core logic | ✅ Implemented |
+| `src/memory/memorybot_prompt.py` | System prompt templates | ✅ Implemented |
+| `src/discord_bot/message_handler.py` | Route memory queries to MemoryBot | ⏳ Planned |
+| `src/lm_models/api.py` | Support parallel/concurrent LM calls | ⏳ Planned |
 
 ## Planned Evolution
 

@@ -544,3 +544,64 @@ When reporting bugs, use this format:
 | ✅ Solved | Issue resolved and verified |
 | ❌ Won't Fix | Issue acknowledged but not actionable |
 | 💡 Concept | Feature concept, pending refinement |
+---
+## Critical Bugs
+
+### BUG-MEM-001: memorybot.py Line 72 - Calls Non-existent `memory_recall()` Method
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-MEM-001 |
+| **Date** | 2026-06-04 |
+| **Status** | 🔄 Open |
+| **Severity** | Critical |
+| **Description** | `memorybot.py` line 72 calls `self.memory_manager.memory_recall()` but the `MemoryManager` class does not have a `memory_recall()` method. The correct method name is `get_relevant_memories()`. |
+| **Root Cause** | Method name mismatch - `memory_recall()` does not exist in `MemoryManager` class |
+| **Fix Applied** | TBD - Should call `self.memory_manager.get_relevant_memories()` instead |
+| **Files Modified** | `src/memory/memorybot.py` (line 72) |
+
+---
+
+### BUG-MEM-002: memorybot.py Lines 91-95 - Field Name Mismatch (`score` vs `relevance_score`)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-MEM-002 |
+| **Date** | 2026-06-04 |
+| **Status** | 🔄 Open |
+| **Severity** | Critical |
+| **Description** | `memorybot.py` lines 91-95 expect a `'score'` field in memory results, but `MemoryLite` returns `'relevance_score'` instead. This will cause `KeyError` at runtime when accessing `result['score']`. |
+| **Root Cause** | Field name mismatch between `MemoryLite` return format and `memorybot.py` expectations |
+| **Fix Applied** | TBD - Should access `result['relevance_score']` instead of `result['score']` |
+| **Files Modified** | `src/memory/memorybot.py` (lines 91-95) |
+
+---
+
+### BUG-MEM-003: memorybot.py Lines 97-104 - Calls Non-existent `get_conversation_context()` Method
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-MEM-003 |
+| **Date** | 2026-06-04 |
+| **Status** | 🔄 Open |
+| **Severity** | Critical |
+| **Description** | `memorybot.py` lines 97-104 call `self.memory_manager.get_conversation_context()` but this method does not exist on the `MemoryManager` class. This will raise `AttributeError` at runtime. |
+| **Root Cause** | `get_conversation_context()` method does not exist in `MemoryManager` class |
+| **Fix Applied** | TBD - Either implement `get_conversation_context()` in `MemoryManager` or use an alternative method |
+| **Files Modified** | `src/memory/memorybot.py` (lines 97-104) |
+
+---
+
+### BUG-MEM-004: memorybot.py Lines 106-108 - Calls Non-existent `get_all_memory_ids()` Method
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-MEM-004 |
+| **Date** | 2026-06-04 |
+| **Status** | 🔄 Open |
+| **Severity** | Critical |
+| **Description** | `memorybot.py` lines 106-108 call `self.memory_manager.get_all_memory_ids()` but this method does not exist on the `MemoryManager` class. This will raise `AttributeError` at runtime. |
+| **Root Cause** | `get_all_memory_ids()` method does not exist in `MemoryManager` class |
+| **Fix Applied** | TBD - Either implement `get_all_memory_ids()` in `MemoryManager` or use an alternative method |
+| **Files Modified** | `src/memory/memorybot.py` (lines 106-108) |
+

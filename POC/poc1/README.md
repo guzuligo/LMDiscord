@@ -1,9 +1,9 @@
 # Discord Bot + LM Studio Integration - POC test1
 
 ## Overview
-Proof of Concept implementation for a Python desktop application with a GUI that connects a Discord bot to a local LM Studio instance, enabling AI-powered chat responses with configurable tools.
+Proof of Concept implementation for a Python application with a **Flask web-based GUI** (http://localhost:5000) that connects a Discord bot to a local LM Studio instance, enabling AI-powered chat responses with configurable tools.
 
-**Current GUI**: Flask web-based interface (http://localhost:5000) — switched from tkinter due to Python 3.13/Fedora compatibility.
+**GUI Type**: Flask web interface (not desktop — uses browser-based UI with HTML/CSS/JavaScript). **Note**: This is NOT a tkinter desktop app; the GUI was migrated from tkinter to Flask due to Python 3.13/Fedora compatibility issues.
 
 ## Structure
 - `main.py` - Application entry point
@@ -22,8 +22,9 @@ Proof of Concept implementation for a Python desktop application with a GUI that
 ## Features
 - Discord bot with mention-triggered responses
 - LM Studio integration via OpenAI-compatible API
-- Tool calling system (end_session, image_describe)
+- Tool calling system (context_compress, image_compare, channel_search, math_calculate, comfyui_generate*)
 - Flask web interface with Chat, Tokens, **Servers**, Settings, Logs tabs
+- **ComfyUI Generate***: Stub tool registered but not implemented (TODO placeholder)
 - **Server Configuration System** (FEAT-001 + UX-001): Per-server enable/disable and per-channel allow/deny lists
   - **Auto-discovery**: Click "📡 Load Servers from Discord" to browse servers the bot is connected to
   - **Quick-add servers**: Select a server from dropdown and add it to config instantly
@@ -41,11 +42,16 @@ Proof of Concept implementation for a Python desktop application with a GUI that
 
 ## Recent Features (5/14/2026 - UX-001)
 - **Server Config Auto-Discovery**: Added auto-discovery of Discord servers and channels
-  - Backend: `get_guilds_info()` and `get_guild_channels()` methods in DiscordBot class
+  - Backend: `get_guilds_info()` and `get_guild_channels()` methods in `bot_core.py`
   - API: `/api/discord/servers` and `/api/discord/channels/<guild_id>` endpoints
   - Frontend: Auto-discovery UI with server/channel dropdown pickers
   - Server list now shows names alongside IDs
   - Channel list now shows names alongside IDs
+
+## Known Limitations
+- **ComfyUI Generate Tool (comfyui_generate)**: Registered in the tool system but NOT implemented. The file `src/tools/builtins/comfyui_generate.py` contains only TODO comments (28 lines). A working reference implementation exists at `helloworlds/comfyui_api_client.py`.
+- **Image Compare**: Uses LM Studio vision model for visual analysis, NOT algorithmic comparison (no SSIM/MSE/pixel-level diff). Single image = description, multiple images = LM-based visual comparison.
+- **Context Compression Auto-Trigger**: Configuration settings exist (`context_compression_enabled`, `context_token_threshold`, `context_message_threshold`) but the auto-trigger logic is NOT wired into the message processing loop. The tool is available for manual LM calls but won't auto-fire.
 
 ## Recent Features (5/13/2026 - FEAT-001)
 - **Server Configuration System**: Per-server enable/disable and per-channel allow/deny lists
