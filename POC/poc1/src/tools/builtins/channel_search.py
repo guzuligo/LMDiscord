@@ -418,13 +418,41 @@ class ChannelSearchTool(BaseTool):
                         if content_types and "link" in content_types:
                             match = True
                         else:
-                            match = m.get("has_embeds", False)
+                            # Check for actual link embeds: use content_types["link"]
+                            # which bot_core.py populates with embed URLs.
+                            # IMPORTANT: Do NOT use image_urls here because
+                            # image_urls also contains attachment URLs which are
+                            # not link embeds.
+                            match = bool(m.get("content_types", {}).get("link", []))
                     
                     if has_file_param and not match:
                         if content_types and "file" in content_types:
                             match = True
                         else:
-                            match = len(m.get("attachments", [])) > 0 or m.get("has_image", False)
+                            # Check for non-image file attachments.
+                            # IMPORTANT: Do NOT include has_image here - files
+                            # should be distinct from images. Images are handled
+                            # by has_image filter. We check attachments list
+                            # and exclude common image file extensions to
+                            # differentiate files from images.
+                            attachments = m.get("attachments", [])
+                            if attachments:
+                                # Filter out image-only attachments
+                                for att in attachments:
+                                    if isinstance(att, str):
+                                        # Check if it's a non-image file extension
+                                        non_image_exts = ('.pdf', '.doc', '.docx',
+                                            '.txt', '.csv', '.json', '.xml', '.py',
+                                            '.js', '.html', '.css', '.md', '.log',
+                                            '.zip', '.rar', '.7z', '.exe', '.sh',
+                                            '.bat', '.cmd', '.sql', '.yaml', '.yml',
+                                            '.toml', '.ini', '.cfg', '.conf')
+                                        if any(att.lower().endswith(ext) for ext in non_image_exts):
+                                            match = True
+                                            break
+                            elif m.get("has_files", False):
+                                # Fallback: use has_files flag if available
+                                match = True
                     
                     if has_video_param and not match:
                         if content_types and "video" in content_types:
@@ -476,11 +504,10 @@ class ChannelSearchTool(BaseTool):
             if after_date_param:
                 after_dt = self._parse_date(after_date_param)
                 if after_dt:
-                    # For date-only inputs (no time component), treat as "end of day"
-                    # So `after_date: 2026-06-03` means "after June 3rd" (i.e., June 4th+)
-                    if after_dt.hour == 0 and after_dt.minute == 0 and after_dt.second == 0:
-                        from datetime import timedelta
-                        after_dt = after_dt + timedelta(days=1)
+                    # For date-only inputs (no time component), use as-is.
+                    # `after_date: 2026-06-03` means "after June 3rd 00:00:00"
+                    # (i.e., messages from June 3rd 00:00:01 onwards).
+                    # This matches the LLM's natural expectation from the tool description.
                     filtered = []
                     for m in messages:
                         msg_ts = m.get("timestamp", "")
