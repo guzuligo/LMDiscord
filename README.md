@@ -14,7 +14,7 @@ A Python application that connects a Discord bot to a local LM Studio instance, 
 ### 1. Navigate to the POC Directory
 
 ```bash
-cd POC/test1
+cd POC/poc1
 ```
 
 ### 2. Install Dependencies
@@ -81,7 +81,7 @@ Project6_Discord_helloWorld/
 ├── .env.example                    # Environment variables template
 │
 ├── POC/
-│   └── test1/                      # Active POC (Flask Web GUI)
+│   └── poc1/                      # Active POC (Flask Web GUI)
 │       ├── main.py                 # ✅ Entry point - launches Flask app
 │       ├── README.md               # POC-specific documentation
 │       ├── requirements.txt        # POC dependencies
@@ -100,10 +100,8 @@ Project6_Discord_helloWorld/
 │           ├── templates/          # HTML templates
 │           └── static/             # CSS/JS assets
 │
-└── test/                           # Basic test files
-    ├── bot.py                      # Simple Hello World bot test
-    ├── lmTest.py                   # LM Studio connection test
-    └── ...                         # Other test utilities
+└── helloworlds/                    # Hello World examples
+    └── botHelloWorld.py            # Simple Hello World bot test
 ```
 
 ## 🔐 Security Note

@@ -42,3 +42,13 @@ ENV/
 *.swp
 *.swo
 user/
+
+# Database files
+*.db
+
+# Data directories
+data/memory.db
+POC/poc1/data/memory.db
+
+# Unit test directories
+POC/poc1/unittest/
