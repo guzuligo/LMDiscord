@@ -243,6 +243,20 @@ class MessageHandler:
             "3. AVOID REDUNDANT CALLS: Do not call the same tool multiple times with the same arguments. If you already have the information, use it.\n"
             "4. SEARCH QUERY REQUIREMENT: When using channel_search with a search_query, the query must be at least 2 characters long. Shorter queries will be rejected.\n"
             "5. UNFILTERED QUERIES: When searching without filters (no search_query, no username), only the 5 most recent messages are returned for efficiency.\n"
+            "\n--- SEARCH WORKFLOW (SEARCH-001) ---\n"
+            "When the user asks about OLD messages or you need to search beyond recent history:\n"
+            "1. START with channel_search(channel='this', limit=15, search_query='keyword') — scans last ~15 messages\n"
+            "2. If no results, use the oldest_message_id from the result to search deeper:\n"
+            "   channel_search(channel='this', search_query='keyword', before_message_id=<oldest_id>, max_pages=3)\n"
+            "   This scans 3 pages × 15 = 45 more messages (total ~60)\n"
+            "3. If you need to go back further but don't need message CONTENT, use channel_skip to fast-forward:\n"
+            "   channel_skip(channel='this', count=50) — returns only IDs + timestamps + media indicators\n"
+            "   Use the oldest ID from skip results with before_message_id to anchor deeper searches\n"
+            "4. Use channel_skip when: you need to reach a specific date/time period without scanning every message\n"
+            "5. Watch the 'Pages scanned' counter — if it reaches max_pages, increase max_pages to go deeper\n"
+            "6. Each skip_ahead returns media indicators (📷 images, 🔗 links, 📎 embeds) so you can decide if more scanning is needed\n"
+            "7. MAX 20 pages total per search to avoid rate limits. Increase max_pages incrementally.\n"
+            "8. After finding matches, provide a direct answer using the search results — do not re-call channel_search.\n"
         )
         
         # REASONING-FIX: Add reasoning brevity instruction if enabled

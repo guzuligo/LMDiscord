@@ -517,6 +517,23 @@ _No open issues._
 
 ## Open Issues
 
+### ✅ SEARCH-001: Channel Search Lacks Pagination for Deep History (Solved)
+
+| Field | Value |
+|-------|-------|
+| **ID** | SEARCH-001 |
+| **Date** | 2026-07-07 |
+| **Date Solved** | 2026-07-07 |
+| **Status** | ✅ Solved |
+| **Severity** | Medium |
+| **Description** | Current channel_search tool only scans the most recent 15-50 messages per channel. Cannot search deeper into channel history because there's no pagination support via Discord's `before` message ID parameter. |
+| **Solution Applied** | **1. New `channel_skip` tool** — Fast-forward through channel history returning only metadata (ID, timestamp, author, media indicators). Allows LM to "scan through time" without token bloat. **2. Enhanced `channel_search` with pagination** — Added `before_message_id`, `max_pages`, `pages_scanned_so_far` parameters. Supports scanning up to 20 pages × 50 messages = 1000 messages per channel. **3. Search context tracker** — In-memory tracking of visited_ids, timestamps, pages_scanned per channel to prevent duplicates. **4. Paginated fetch method** — `_fetch_channel_messages_paginated()` loops backward using Discord's `before` cursor with 0.5s rate limit safety delays. **5. Skip-ahead method** — `_skip_ahead_messages()` returns metadata-only results for timeline navigation. **6. System prompt update** — Added SEARCH-001 workflow instructions guiding LM through: start → paginate → skip → deep search. |
+| **Files Created** | `src/tools/builtins/channel_skip.py` (new skip_ahead tool) |
+| **Files Modified** | `src/tools/builtins/channel_search.py` (pagination params, metadata), `src/discord_bot/bot_core.py` (pagination methods, skip methods, tool registry), `src/discord_bot/tool_executor.py` (skip handler, pagination param passing), `src/discord_bot/message_handler.py` (search workflow instructions), `src/tools/builtins/__init__.py` (register ChannelSkipTool) |
+| **Search Workflow** | 1. `channel_search(channel='this', search_query='keyword')` → scans last ~15 messages 2. If no match: `channel_search(channel='this', search_query='keyword', before_message_id=<oldest_id>, max_pages=3)` → scans 45 more 3. If need to reach specific date: `channel_skip(channel='this', count=50)` → returns IDs + timestamps 4. Use oldest skip ID with before_message_id to anchor deeper searches |
+
+---
+
 ### 🆕 CHANNEL-001: channel_search Result Format Causes LM Misinterpretation
 
 | Field | Value |
