@@ -37,10 +37,16 @@ class ChannelSearchTool(BaseTool):
     
     The actual Discord API calls (channel.history()) are handled by the
     bot layer in bot_core.py, since they are async operations.
+    
+    Pagination Support:
+    - Use `before_message_id` to search messages older than a specific ID
+    - Use `max_pages` to scan multiple pages of 50 messages each
+    - Use `search_depth` to track total messages scanned across pages
     """
 
     MAX_MESSAGES = 50
     TRUNCATE_LENGTH = 200
+    MAX_PAGES = 20  # Safety limit to prevent rate limit exhaustion
 
     @property
     def name(self) -> str:
@@ -55,8 +61,11 @@ class ChannelSearchTool(BaseTool):
             "find specific messages, or gather context before responding. "
             "Channel specification: use '#123456789' for channel ID, '@channelname' for channel name, "
             "'this' for the current active channel, or leave empty to search all channels. "
-            "Optional filters: limit (default 15, max 50), search_query (text filter), "
-            "username (author filter), compress_long (truncate long messages)."
+            "Pagination: use before_message_id (oldest ID from previous result) to search older messages. "
+            "Use max_pages to scan multiple batches (default 1, max 20). Each page fetches up to 'limit' messages. "
+            "Filters: limit (default 15, max 50), search_query (text filter), "
+            "username (author filter), compress_long (truncate long messages). "
+            "Result includes total_messages_scanned and oldest_message_id for pagination tracking."
         )
 
     @property
@@ -99,6 +108,22 @@ class ChannelSearchTool(BaseTool):
                 "tell_user_you_are_working": {
                     "type": "string",
                     "description": "A short, friendly message to show the user while you work. E.g. 'Let me check what we were talking about...' or 'Looking through recent messages...'. This replaces the generic status message."
+                },
+                "before_message_id": {
+                    "type": "string",
+                    "description": "Discord message ID to anchor the search BEFORE this point. Use the oldest_message_id from a previous search result to go deeper into history. The bot will fetch messages older than this ID."
+                },
+                "max_pages": {
+                    "type": "integer",
+                    "description": "Maximum number of 50-message pages to scan (default: 1, max: 20). Each page fetches up to 'limit' messages. Use this to search deeper into history. Total messages scanned = max_pages * limit.",
+                    "default": 1,
+                    "minimum": 1,
+                    "maximum": 20
+                },
+                "pages_scanned_so_far": {
+                    "type": "integer",
+                    "description": "Number of pages already scanned in this search session. Used for tracking total search depth across multiple tool calls.",
+                    "default": 0
                 }
             },
             "required": []
@@ -258,14 +283,65 @@ class ChannelSearchTool(BaseTool):
 
                 formatted_messages.append("\n".join(entry_parts))
 
+            # Extract pagination metadata from kwargs
+            before_message_id = kwargs.get("before_message_id")
+            max_pages = kwargs.get("max_pages", 1)
+            pages_scanned_so_far = kwargs.get("pages_scanned_so_far", 0)
+            limit = kwargs.get("limit", 15)
+            
+            # Get oldest message ID for further pagination
+            oldest_msg = messages[-1] if messages else None
+            oldest_message_id = str(oldest_msg.get("message_id", "")) if oldest_msg else ""
+            oldest_timestamp = oldest_msg.get("timestamp", "") if oldest_msg else ""
+            
+            # Calculate search depth
+            total_scanned = (pages_scanned_so_far + max_pages) * limit
+            has_more_pages = (pages_scanned_so_far + max_pages) < self.MAX_PAGES
+            
+            # Build pagination info section
+            pagination_info = [
+                "",
+                "--- Pagination Info ---",
+                f"  Messages matched: {len(messages)}",
+                f"  Pages scanned: {pages_scanned_so_far + 1}/{max_pages}",
+                f"  Total messages scanned (all pages): ~{total_scanned}",
+            ]
+            
+            if oldest_message_id:
+                pagination_info.append(f"  Oldest message ID: {oldest_message_id}")
+                pagination_info.append(f"  Oldest timestamp: {oldest_timestamp}")
+                
+                if has_more_pages:
+                    pagination_info.append(
+                        f"  💡 To go deeper: use before_message_id={oldest_message_id}, "
+                        f"max_pages={max_pages + 1}"
+                    )
+                else:
+                    pagination_info.append(
+                        "  ⚠️ Reached max pages. Increase max_pages to search deeper "
+                        "(max 20 pages total)."
+                    )
+            else:
+                pagination_info.append("  ⚠️ No more messages — reached the oldest messages in this channel")
+            
             # Build summary
             summary_lines = [
                 f"📋 Channel Search Results ({len(messages)} messages):",
                 "",
                 *formatted_messages,
-                "",
-                f"Total messages returned: {len(messages)}"
             ]
+            
+            # Add pagination info after message list
+            summary_lines.extend(pagination_info)
+            
+            # Add LM instructions to help it use the results
+            summary_lines.extend([
+                "",
+                "--- Instructions ---",
+                "Read the messages above. If the search query was 'X', identify which messages "
+                "contain this term and provide a direct answer to the user's original question.",
+                "If no results found, use the pagination info to search older messages."
+            ])
 
             result_text = "\n".join(summary_lines)
 

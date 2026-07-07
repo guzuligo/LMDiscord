@@ -37,6 +37,7 @@ from src.tools.registry import ToolRegistry
 from src.tools.builtins.image_describe import ImageDescribeTool
 from src.tools.builtins.image_compare import ImageCompareTool
 from src.tools.builtins.channel_search import ChannelSearchTool
+from src.tools.builtins.channel_skip import ChannelSkipTool
 from src.tools.builtins.memory_tool import MemoryTool
 
 # Import memory manager
@@ -113,8 +114,14 @@ class DiscordBot:
         
         self._tool_registry.register(self._image_describe_tool)
         self._tool_registry.register(self._image_compare_tool)
+        self._channel_search_tool = ChannelSearchTool()
+        self._channel_skip_tool = ChannelSkipTool()
         self._tool_registry.register(self._channel_search_tool)
+        self._tool_registry.register(self._channel_skip_tool)
         self._tool_registry.register(self._memory_tool)
+        
+        # Search context tracker: channel_id -> {visited_ids, timestamps, pages_scanned}
+        self._search_context: Dict[int, Dict[str, Any]] = {}
         
         # Get tool definitions for LM Studio
         self._tool_definitions = self._tool_registry.get_all_definitions()
@@ -1538,12 +1545,18 @@ class DiscordBot:
         limit: int = 15,
         search_query: str = "",
         username: str = "",
-        compress_long: bool = True
+        compress_long: bool = True,
+        before_message_id: str = "",
+        max_pages: int = 1,
+        pages_scanned_so_far: int = 0
     ) -> Dict[str, Any]:
         """Public method to get channel messages for tool execution.
         
         This method is called by the tool_executor to fetch and format
         channel messages for the ChannelSearchTool.
+        
+        Supports pagination via before_message_id and max_pages parameters
+        to search deeper into channel history.
         
         Args:
             channel: Channel specification. Formats:
@@ -1555,6 +1568,9 @@ class DiscordBot:
             search_query: Optional text filter
             username: Optional username filter
             compress_long: Whether to truncate long messages
+            before_message_id: Discord message ID to anchor search BEFORE this point
+            max_pages: Maximum number of pages to scan (default 1, max 20)
+            pages_scanned_so_far: Pages already scanned in this search session
 
         Returns:
             Dict with 'messages' key containing the formatted message list
@@ -1574,7 +1590,13 @@ class DiscordBot:
                 "available_channels": available
             }
         
-        messages = await self._fetch_channel_messages(channel_id, limit)
+        # Use paginated fetch if before_message_id is provided
+        if before_message_id:
+            messages = await self._fetch_channel_messages_paginated(
+                channel_id, limit, before_message_id, max_pages, pages_scanned_so_far
+            )
+        else:
+            messages = await self._fetch_channel_messages(channel_id, limit)
         
         # Apply search_query filter
         if search_query:
@@ -1601,6 +1623,320 @@ class DiscordBot:
                     msg["content"] = content[:200] + "..."
         
         return {"messages": messages}
+
+    async def _fetch_channel_messages_paginated(
+        self,
+        channel_id: int,
+        limit: int,
+        before_message_id: str,
+        max_pages: int,
+        pages_scanned_so_far: int
+    ) -> List[Dict[str, Any]]:
+        """Fetch messages using pagination with before_message_id anchor.
+        
+        This method implements the pagination workaround described by Gemini:
+        - Start from before_message_id and fetch backward in pages
+        - Each page fetches up to 'limit' messages
+        - Total messages scanned = max_pages * limit
+        
+        Args:
+            channel_id: Discord channel ID
+            limit: Messages per page (1-50)
+            before_message_id: Discord message ID to anchor search BEFORE
+            max_pages: Maximum pages to fetch (1-20)
+            pages_scanned_so_far: Pages already fetched in previous calls
+            
+        Returns:
+            List of message dicts (oldest first, chronological order)
+        """
+        if not self.client.is_ready():
+            logger.warning("Bot not ready, cannot fetch paginated messages")
+            return []
+        
+        # Clamp limit
+        limit = max(1, min(limit, 50))
+        
+        # Clamp max_pages
+        max_pages = max(1, min(max_pages, 20))
+        
+        # Calculate total pages to fetch
+        total_pages = pages_scanned_so_far + max_pages
+        
+        all_messages = []
+        current_before_id = int(before_message_id) if before_message_id else None
+        
+        # Track visited IDs to prevent duplicates
+        channel_key = channel_id
+        if channel_key not in self._search_context:
+            self._search_context[channel_key] = {
+                "visited_ids": set(),
+                "timestamps": {},
+                "pages_scanned": pages_scanned_so_far,
+                "total_messages": 0
+            }
+        
+        context = self._search_context[channel_key]
+        
+        for page_num in range(pages_scanned_so_far, total_pages):
+            try:
+                # Get the channel
+                channel = self.client.get_channel(channel_id)
+                if channel is None:
+                    for guild in self.client.guilds:
+                        channel = guild.get_channel(channel_id)
+                        if channel is not None:
+                            break
+                
+                if channel is None:
+                    logger.warning(f"Channel {channel_id} not found for paginated fetch")
+                    break
+                
+                # Fetch this page
+                page_messages = []
+                async for msg in channel.history(limit=limit, before=current_before_id, oldest_first=False):
+                    # Skip bot messages (but include our own for context)
+                    if msg.author.bot and msg.author != self.client.user:
+                        continue
+                    
+                    page_messages.append(msg)
+                
+                if not page_messages:
+                    logger.info(f"[pagination] No more messages on page {page_num + 1}")
+                    break
+                
+                # Process messages in this page
+                for msg in page_messages:
+                    msg_id = str(msg.id)
+                    
+                    # Skip if already visited
+                    if msg_id in context["visited_ids"]:
+                        continue
+                    
+                    context["visited_ids"].add(msg_id)
+                    
+                    # Get author info
+                    author = msg.author.name
+                    display_name = msg.author.display_name
+                    
+                    # Get content
+                    content = (msg.content or "").strip()
+                    if not content:
+                        content = "[Image/Attachment only]"
+                    
+                    # Get timestamp
+                    timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    context["timestamps"][msg_id] = timestamp
+                    
+                    # Check for reply
+                    is_reply = False
+                    replied_to_author = None
+                    replied_to_content = None
+                    if msg.reference:
+                        try:
+                            referenced_msg = await msg.channel.fetch_message(msg.reference.message_id)
+                            if referenced_msg:
+                                is_reply = True
+                                replied_to_author = referenced_msg.author.name
+                                replied_to_content = (referenced_msg.content or "").strip()[:100]
+                        except (discord.NotFound, AttributeError):
+                            pass
+                    
+                    # Check for image attachment
+                    image_urls = []
+                    has_image = False
+                    attachments = []
+                    
+                    try:
+                        full_msg = await channel.fetch_message(msg.id)
+                        if hasattr(full_msg, 'attachments') and full_msg.attachments:
+                            attachments = list(full_msg.attachments)
+                            for attachment in attachments:
+                                if attachment.filename:
+                                    ext = attachment.filename.lower().split('.')[-1]
+                                    if ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'):
+                                        has_image = True
+                                        image_urls.append(attachment.url)
+                    except (discord.NotFound, discord.Forbidden, AttributeError):
+                        pass
+                    
+                    if not attachments and hasattr(msg, 'attachments') and msg.attachments:
+                        attachments = list(msg.attachments)
+                        for attachment in attachments:
+                            if attachment.filename:
+                                ext = attachment.filename.lower().split('.')[-1]
+                                if ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'):
+                                    has_image = True
+                                    image_urls.append(attachment.url)
+                    
+                    # Check embeds for images
+                    embeds = []
+                    try:
+                        if hasattr(full_msg if 'full_msg' in locals() else msg, 'embeds'):
+                            embeds = full_msg.embeds if 'full_msg' in locals() else msg.embeds
+                    except:
+                        pass
+                    
+                    if embeds:
+                        for embed in embeds:
+                            if hasattr(embed, 'url') and embed.url:
+                                if embed.url not in image_urls:
+                                    image_urls.append(embed.url)
+                                    has_image = True
+                            if hasattr(embed, 'image') and embed.image and hasattr(embed.image, 'url'):
+                                if embed.image.url not in image_urls:
+                                    image_urls.append(embed.image.url)
+                                    has_image = True
+                    
+                    msg_dict = {
+                        "message_id": msg.id,
+                        "channel_id": channel.id,
+                        "guild_id": msg.guild.id if msg.guild else None,
+                        "author": author,
+                        "display_name": display_name,
+                        "content": content,
+                        "timestamp": timestamp,
+                        "is_reply": is_reply,
+                        "replied_to_author": replied_to_author,
+                        "replied_to_content": replied_to_content,
+                        "has_image": has_image,
+                        "image_urls": image_urls
+                    }
+                    all_messages.append(msg_dict)
+                
+                context["pages_scanned"] = page_num + 1
+                context["total_messages"] += len(page_messages)
+                
+                # Update before_id for next page (oldest message in this page)
+                if page_messages:
+                    current_before_id = page_messages[-1].id
+                else:
+                    break
+                
+                # Small delay between pages to be respectful of rate limits
+                if page_num < total_pages - 1:
+                    await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                logger.error(f"[pagination] Error on page {page_num + 1}: {e}", exc_info=True)
+                break
+        
+        # Reverse to show oldest first (chronological order)
+        all_messages.reverse()
+        
+        logger.info(
+            f"[pagination] Fetched {len(all_messages)} messages across "
+            f"{context['pages_scanned']} pages for channel {channel_id}"
+        )
+        
+        return all_messages
+
+    async def _skip_ahead_messages(
+        self,
+        channel: str,
+        count: int = 50
+    ) -> Dict[str, Any]:
+        """Fetch oldest N messages from a channel for skip-ahead (metadata only).
+        
+        This method returns only message metadata (ID, timestamp, author,
+        media indicators) WITHOUT full content, allowing the LM to
+        "scan through time" efficiently.
+        
+        Args:
+            channel: Channel specification string
+            count: Number of oldest messages to fetch (1-100)
+            
+        Returns:
+            Dict with 'messages' key containing message metadata dicts
+        """
+        if not self.client.is_ready():
+            return {"messages": [], "error": "Bot not ready"}
+        
+        # Clamp count
+        count = max(1, min(count, 100))
+        
+        # Resolve channel
+        channel_id = self.resolve_channel(channel) if channel.strip() else None
+        if channel_id is None:
+            # Try to get current active session channel
+            active = self._session_manager.get_active_channels()
+            if active:
+                channel_id = int(active[0])
+            else:
+                return {
+                    "messages": [],
+                    "error": "Could not resolve channel. Use '#123456789' or '@channelname'"
+                }
+        
+        try:
+            channel_obj = self.client.get_channel(channel_id)
+            if channel_obj is None:
+                for guild in self.client.guilds:
+                    channel_obj = guild.get_channel(channel_id)
+                    if channel_obj is not None:
+                        break
+            
+            if channel_obj is None:
+                return {"messages": [], "error": f"Channel {channel_id} not found"}
+            
+            # Fetch messages (oldest first in the batch)
+            messages = []
+            async for msg in channel_obj.history(limit=count, oldest_first=False):
+                if msg.author.bot and msg.author != self.client.user:
+                    continue
+                
+                # Extract metadata only (no content!)
+                has_image = False
+                has_link = False
+                has_embed = False
+                attachment_count = 0
+                
+                # Check attachments
+                if hasattr(msg, 'attachments') and msg.attachments:
+                    att_list = list(msg.attachments)
+                    attachment_count = len(att_list)
+                    for att in att_list:
+                        if att.filename:
+                            ext = att.filename.lower().split('.')[-1]
+                            if ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'):
+                                has_image = True
+                
+                # Check embeds
+                if hasattr(msg, 'embeds') and msg.embeds:
+                    for embed in msg.embeds:
+                        if embed.type == 'image' or (hasattr(embed, 'thumbnail') and embed.thumbnail and embed.thumbnail.url):
+                            has_embed = True
+                            has_image = True
+                        if hasattr(embed, 'url') and embed.url and ('http' in embed.url):
+                            has_link = True
+                
+                # Check for links in content
+                content = (msg.content or "").strip()
+                if content and ('http://' in content or 'https://' in content):
+                    has_link = True
+                
+                msg_dict = {
+                    "message_id": msg.id,
+                    "channel_id": channel_obj.id,
+                    "guild_id": msg.guild.id if msg.guild else None,
+                    "author": msg.author.name,
+                    "display_name": msg.author.display_name,
+                    "timestamp": msg.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "has_image": has_image,
+                    "has_link": has_link,
+                    "has_embed": has_embed,
+                    "attachment_count": attachment_count,
+                    "is_reply": bool(msg.reference)
+                }
+                messages.append(msg_dict)
+            
+            # Reverse to chronological order
+            messages.reverse()
+            
+            return {"messages": messages}
+            
+        except Exception as e:
+            logger.error(f"[skip_ahead] Error fetching messages: {e}", exc_info=True)
+            return {"messages": [], "error": str(e)}
 
     # ====================================================================
     # MEMORY INTEGRATION (REQ-004, CONCEPT-001)

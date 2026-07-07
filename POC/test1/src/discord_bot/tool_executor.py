@@ -90,6 +90,10 @@ class ToolCallHandler:
                 await self._handle_channel_search(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
                 )
+            elif func_name == "channel_skip":
+                await self._handle_channel_skip(
+                    func_args, messages_for_lm, tool_call_id, get_bot_instance
+                )
             elif func_name == "memory_tool":
                 result = await self._handle_memory_tool(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
@@ -183,6 +187,10 @@ class ToolCallHandler:
                 )
             elif func_name == "channel_search":
                 await self._handle_channel_search_active(
+                    func_args, messages_for_lm, tool_call_id, get_bot_instance
+                )
+            elif func_name == "channel_skip":
+                await self._handle_channel_skip_active(
                     func_args, messages_for_lm, tool_call_id, get_bot_instance
                 )
             elif func_name == "memory_tool":
@@ -664,8 +672,11 @@ class ToolCallHandler:
                 })
                 return
 
-            # Extract message_id for fetching specific message attachments
+            # Extract pagination parameters
             message_id = args.get("message_id")
+            before_message_id = args.get("before_message_id", "")
+            max_pages = args.get("max_pages", 1)
+            pages_scanned_so_far = args.get("pages_scanned_so_far", 0)
             
             # Fetch messages using the bot's async method with unified channel parameter
             result = await bot.get_channel_messages(
@@ -673,7 +684,10 @@ class ToolCallHandler:
                 limit=int(limit),
                 search_query=str(search_query),
                 username=str(username),
-                compress_long=bool(compress_long)
+                compress_long=bool(compress_long),
+                before_message_id=str(before_message_id) if before_message_id else "",
+                max_pages=int(max_pages),
+                pages_scanned_so_far=int(pages_scanned_so_far)
             )
 
             messages = result.get("messages", [])
@@ -905,6 +919,109 @@ class ToolCallHandler:
             get_bot_instance: Optional callable that returns the DiscordBot instance
         """
         await self._handle_channel_search(
+            func_args, messages_for_lm, tool_call_id, get_bot_instance
+        )
+
+    async def _handle_channel_skip(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        get_bot_instance: Optional[Any] = None
+    ) -> None:
+        """Handle channel_skip tool call (new session variant).
+
+        Fetches oldest N messages from a channel (metadata only) for timeline navigation.
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            get_bot_instance: Optional callable that returns the DiscordBot instance
+        """
+        try:
+            args = json.loads(func_args)
+            channel = args.get("channel", "")
+            count = args.get("count", 50)
+            target_date = args.get("target_date", "")
+
+            logger.info(f"[channel_skip] Skipping in channel '{channel}' (count={count}, target={target_date})")
+
+            if get_bot_instance is None:
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "Error: Bot instance not available for channel_skip"
+                })
+                return
+
+            bot = get_bot_instance()
+            if bot is None:
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": "Error: Bot not available for channel_skip"
+                })
+                return
+
+            # Fetch skip-ahead data using the bot's async method
+            result = await bot._skip_ahead_messages(
+                channel=str(channel),
+                count=int(count)
+            )
+
+            messages = result.get("messages", [])
+            error = result.get("error")
+
+            if error:
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": f"Error during channel_skip: {error}"
+                })
+            else:
+                # Format result for LM Studio using the ChannelSkipTool
+                from src.tools.builtins.channel_skip import ChannelSkipTool
+                tool = ChannelSkipTool()
+                tool_result = await tool.execute(messages=messages, count=int(count))
+                messages_for_lm.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": tool_result.content
+                })
+                logger.info(f"[channel_skip] Returned {len(messages)} metadata entries")
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing channel_skip args: {e}")
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error: Invalid arguments for channel_skip: {str(e)}"
+            })
+        except Exception as e:
+            logger.error(f"Error in channel_skip: {e}", exc_info=True)
+            messages_for_lm.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"Error during channel skip: {str(e)}"
+            })
+
+    async def _handle_channel_skip_active(
+        self,
+        func_args: str,
+        messages_for_lm: List[Dict],
+        tool_call_id: str,
+        get_bot_instance: Optional[Any] = None
+    ) -> None:
+        """Handle channel_skip tool call (active session variant).
+
+        Args:
+            func_args: Function arguments JSON string
+            messages_for_lm: Messages list to modify
+            tool_call_id: Tool call ID
+            get_bot_instance: Optional callable that returns the DiscordBot instance
+        """
+        await self._handle_channel_skip(
             func_args, messages_for_lm, tool_call_id, get_bot_instance
         )
 

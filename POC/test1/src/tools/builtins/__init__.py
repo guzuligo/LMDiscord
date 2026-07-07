@@ -13,11 +13,13 @@ This package contains all built-in tool implementations:
 from .image_describe import ImageDescribeTool
 from .image_compare import ImageCompareTool
 from .channel_search import ChannelSearchTool
+from .channel_skip import ChannelSkipTool
 from .memory_tool import MemoryTool
 
 __all__ = [
     "ImageDescribeTool",
     "ImageCompareTool",
     "ChannelSearchTool",
+    "ChannelSkipTool",
     "MemoryTool",
 ]
