@@ -1,0 +1,951 @@
+"""
+Flask Web Application for LM Studio Chat + Discord Bot POC
+
+This module implements a web-based chat interface for communicating with LM Studio
+and a Discord bot for Discord integration. It provides a simple REST API and an
+HTML chat interface.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import Config
+from src.lm_studio_client import LMStudioClient
+from src.logger import logger, LogLevel, setup_logging
+from src.chat_api import register_chat_blueprints
+from src.lm_models.api import init_instance_manager, register_lm_blueprints
+# Import the discord_api module to access its attributes dynamically.
+# We import the module (not individual variables) because bot_core.py updates
+# discord_connected/discord_bot_instance directly as module attributes.
+# If we imported them as local variables here, they would become stale copies.
+from src import discord_api
+from src.discord_api import set_app_references, register_discord_blueprints, force_reset_discord_state
+
+# Create local aliases that always read from the module (not stale copies)
+def _get_discord_connected():
+    return discord_api.discord_connected
+def _get_discord_bot_instance():
+    return discord_api.discord_bot_instance
+def _get_discord_status_message():
+    return discord_api.discord_status_message
+from flask import Flask, render_template, jsonify, request, session
+from flask.blueprints import Blueprint
+
+# Initialize Flask app
+app = Flask(__name__)
+app.secret_key = os.urandom(24)
+
+# Initialize config and client
+config = Config()
+client = LMStudioClient(config.lm_studio_hostname, config.lm_studio_port)
+client.config = config  # Pass config reference for downstream modules
+
+# Link app references for discord_api module
+set_app_references(client, config)
+
+# ====================================================================
+# Discord State Reset on Startup
+# ====================================================================
+# When Flask's debug reloader restarts the process, module-level globals
+# get reset but old Discord bot threads may still be running.
+# Force reset ensures clean state on every app startup.
+force_reset_discord_state()
+
+# Re-import force_reset_discord_state after module is fully loaded
+# (It was imported above but we want to ensure it's called on the correct module reference)
+
+# Log level tracking for WebSocket-like polling
+_current_log_level_filter = LogLevel.DEBUG
+
+# ====================================================================
+# Logging Setup
+# ====================================================================
+# NOTE: setup_logging() is called inside the if __name__ == "__main__" block below
+# to prevent terminal.log from being truncated when Flask's debug reloader restarts.
+
+# ==================== Main Route ====================
+
+@app.route("/")
+def index():
+    """Render the main chat page."""
+    return render_template("index.html")
+
+
+# ==================== Status Endpoint ====================
+
+@app.route("/api/status", methods=["GET"])
+def status():
+    """Get connection status."""
+    status_data = {
+        "lm_connected": client.is_connected,
+        "lm_hostname": client.hostname,
+        "lm_port": client.port,
+        "lm_model": client.model,
+        "lm_models": client.models,
+        "discord_connected": _get_discord_connected(),
+        "discord_status": _get_discord_status_message()
+    }
+    
+    if _get_discord_bot_instance():
+        try:
+            status_data["discord_bot_user"] = str(_get_discord_bot_instance().user) if _get_discord_bot_instance().user else None
+        except Exception:
+            pass
+    
+    return jsonify(status_data)
+
+
+# ==================== Logging Endpoints ====================
+
+@app.route("/api/logs", methods=["GET"])
+def get_logs():
+    """Get log entries with optional filtering."""
+    global _current_log_level_filter
+    
+    limit = request.args.get("limit", 100, type=int)
+    level = request.args.get("level", "").upper()
+    module = request.args.get("module", "")
+    
+    if not config.suppress_werkzeug_logging:
+        logger.debug(f"Logs requested: limit={limit}, level={level or 'all'}, module={module or 'all'}", module="app")
+    
+    if level:
+        try:
+            _current_log_level_filter = LogLevel[level]
+            logger.info(f"Log level filter set to: {level}", module="app")
+        except KeyError:
+            return jsonify({
+                "success": False,
+                "error": f"Invalid log level: {level}"
+            }), 400
+    
+    level_filter = _current_log_level_filter if level else None
+    
+    if module:
+        logs = logger.get_logs(limit=limit, level_filter=level_filter, module_filter=module)
+    else:
+        logs = logger.get_logs(limit=limit, level_filter=level_filter)
+    
+    if not config.suppress_werkzeug_logging:
+        logger.debug(f"Returning {len(logs)} log entries", module="app")
+    
+    return jsonify({
+        "success": True,
+        "logs": logs,
+        "total": len(logs),
+        "stats": logger.get_stats()
+    })
+
+
+@app.route("/api/logs/clear", methods=["POST"])
+def clear_logs():
+    """Clear all log entries."""
+    if not config.suppress_werkzeug_logging:
+        logger.info("Logs cleared via API", module="app")
+    logger.clear()
+    return jsonify({
+        "success": True,
+        "message": "Logs cleared"
+    })
+
+
+@app.route("/api/logs/stats", methods=["GET"])
+def get_logs_stats():
+    """Get log statistics."""
+    return jsonify({
+        "success": True,
+        "stats": logger.get_stats()
+    })
+
+
+@app.route("/api/logs/config", methods=["GET"])
+def get_log_config():
+    """Get logger configuration."""
+    return jsonify({
+        "success": True,
+        "config": {
+            "max_entries": logger.max_entries,
+            "log_to_file": logger.log_to_file,
+            "log_file": logger._log_file,
+            "current_filter": _current_log_level_filter.name,
+            "total_entries": len(logger._logs)
+        }
+    })
+
+
+# ==================== Werkzeug Logging Toggle ====================
+
+def apply_werkzeug_logging_config():
+    """Apply Werkzeug logging configuration based on app settings."""
+    import logging
+    log = logging.getLogger('werkzeug')
+    if config.suppress_werkzeug_logging:
+        log.setLevel(logging.ERROR)
+    else:
+        log.setLevel(logging.INFO)
+
+
+apply_werkzeug_logging_config()
+
+
+@app.route("/api/settings/logging", methods=["GET"])
+def get_logging_settings():
+    """Get logging toggle settings."""
+    return jsonify({
+        "success": True,
+        "suppress_werkzeug_logging": config.suppress_werkzeug_logging
+    })
+
+
+@app.route("/api/settings/logging", methods=["POST"])
+def set_logging_settings():
+    """Update logging toggle settings."""
+    data = request.get_json()
+    suppress = data.get("suppress_werkzeug_logging", False)
+    
+    config.suppress_werkzeug_logging = suppress
+    config.save()
+    
+    apply_werkzeug_logging_config()
+    
+    logger.info(f"Werkzeug logging {'suppressed' if suppress else 'enabled'}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "suppress_werkzeug_logging": config.suppress_werkzeug_logging
+    })
+
+
+# ==================== Message Delay Settings ====================
+
+@app.route("/api/settings/delay", methods=["GET"])
+def get_delay_settings():
+    """Get message delay settings."""
+    return jsonify({
+        "success": True,
+        "message_delay": config.message_delay
+    })
+
+
+@app.route("/api/settings/delay", methods=["POST"])
+def set_delay_settings():
+    """Update message delay setting."""
+    data = request.get_json()
+    delay = data.get("message_delay", 5)
+    
+    if not isinstance(delay, int) or delay < 1 or delay > 30:
+        return jsonify({
+            "success": False,
+            "error": "Delay must be an integer between 1 and 30 seconds"
+        }), 400
+    
+    config.message_delay = delay
+    config.save()
+    
+    # Task 5: Apply to Discord bot if running
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        _bot.set_message_delay(delay)
+    
+    logger.info(f"Message delay set to: {delay} seconds", module="app")
+    
+    return jsonify({
+        "success": True,
+        "message_delay": config.message_delay
+    })
+
+
+# ==================== Max Tokens Settings ====================
+
+@app.route("/api/settings/max_tokens", methods=["GET"])
+def get_max_tokens():
+    """Get the current max_tokens setting."""
+    return jsonify({
+        "success": True,
+        "max_tokens": config.max_tokens
+    })
+
+
+@app.route("/api/settings/max_tokens", methods=["POST"])
+def set_max_tokens():
+    """Update the max_tokens setting."""
+    data = request.get_json()
+    tokens = data.get("max_tokens", 2500)
+    
+    if not isinstance(tokens, int) or tokens < 1 or tokens > 8192:
+        return jsonify({
+            "success": False,
+            "error": "Max tokens must be an integer between 1 and 8192"
+        }), 400
+    
+    config.max_tokens = tokens
+    config.save()
+    
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        _bot.set_lm_studio_params(temperature=config.temperature, max_tokens=config.max_tokens)
+    
+    logger.info(f"Max tokens set to: {tokens}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "max_tokens": config.max_tokens
+    })
+
+
+# ==================== System Prompt Settings ====================
+
+@app.route("/api/settings/system_prompt", methods=["GET"])
+def get_system_prompt():
+    """Get the current system prompt."""
+    return jsonify({
+        "success": True,
+        "system_prompt": config.system_prompt
+    })
+
+
+@app.route("/api/settings/system_prompt", methods=["POST"])
+def set_system_prompt():
+    """Update the system prompt."""
+    data = request.get_json()
+    prompt = data.get("system_prompt", "")
+    
+    if not prompt or not prompt.strip():
+        prompt = "You are a helpful assistant in a Discord server."
+    
+    config.system_prompt = prompt
+    config.save()
+    
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        _bot.set_system_prompt(prompt)
+    
+    logger.info(f"System prompt updated", module="app")
+    
+    return jsonify({
+        "success": True,
+        "system_prompt": config.system_prompt
+    })
+
+
+# ==================== Temperature Settings ====================
+
+@app.route("/api/settings/temperature", methods=["GET"])
+def get_temperature():
+    """Get the current temperature setting."""
+    return jsonify({
+        "success": True,
+        "temperature": config.temperature
+    })
+
+
+@app.route("/api/settings/temperature", methods=["POST"])
+def set_temperature():
+    """Update the temperature setting."""
+    data = request.get_json()
+    temp = data.get("temperature")
+    
+    if temp is None:
+        return jsonify({
+            "success": False,
+            "error": "Temperature value is required"
+        }), 400
+    
+    try:
+        temp = float(temp)
+        if temp < 0.0 or temp > 2.0:
+            return jsonify({
+                "success": False,
+                "error": "Temperature must be between 0.0 and 2.0"
+            }), 400
+    except (ValueError, TypeError):
+        return jsonify({
+            "success": False,
+            "error": "Invalid temperature value"
+        }), 400
+    
+    config.temperature = temp
+    config.save()
+    
+    # Task 5: Apply to Discord bot if running
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        _bot.set_lm_studio_params(temperature=temp, max_tokens=config.max_tokens)
+    
+    logger.info(f"Temperature set to: {temp}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "temperature": config.temperature
+    })
+
+
+# ==================== Max Response Length Settings ====================
+
+@app.route("/api/settings/max_response_length", methods=["GET"])
+def get_max_response_length():
+    """Get the current max_response_length setting."""
+    return jsonify({
+        "success": True,
+        "max_response_length": config.max_response_length
+    })
+
+
+@app.route("/api/settings/max_response_length", methods=["POST"])
+def set_max_response_length():
+    """Update the max_response_length setting."""
+    data = request.get_json()
+    length = data.get("max_response_length")
+    
+    if length is None:
+        return jsonify({
+            "success": False,
+            "error": "max_response_length value is required"
+        }), 400
+    
+    try:
+        length = int(length)
+        if length < 100 or length > 10000:
+            return jsonify({
+                "success": False,
+                "error": "max_response_length must be between 100 and 10000"
+            }), 400
+    except (ValueError, TypeError):
+        return jsonify({
+            "success": False,
+            "error": "Invalid max_response_length value"
+        }), 400
+    
+    config.max_response_length = length
+    config.save()
+    
+    logger.info(f"Max response length set to: {length}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "max_response_length": config.max_response_length
+    })
+
+
+# ==================== Log Level Settings ====================
+
+@app.route("/api/settings/log_level", methods=["GET"])
+def get_log_level():
+    """Get the current log level setting."""
+    return jsonify({
+        "success": True,
+        "log_level": _current_log_level_filter.name
+    })
+
+
+@app.route("/api/settings/log_level", methods=["POST"])
+def set_log_level():
+    """Update the log level setting."""
+    data = request.get_json()
+    level = data.get("log_level", "").upper()
+    
+    valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    if level not in valid_levels:
+        return jsonify({
+            "success": False,
+            "error": f"Invalid log level. Must be one of: {valid_levels}"
+        }), 400
+    
+    try:
+        global _current_log_level_filter
+        _current_log_level_filter = LogLevel[level]
+        config.log_level = level
+        config.save()
+        
+        logger.info(f"Log level set to: {level}", module="app")
+        
+        return jsonify({
+            "success": True,
+            "log_level": _current_log_level_filter.name
+        })
+    except Exception as e:
+        logger.error(f"Error setting log level: {e}", module="app", exc=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ==================== Test Tools Toggle Settings ====================
+
+# Global flag for enabling test tools in production/debug
+_enable_test_tools = False
+
+
+@app.route("/api/settings/test_tools", methods=["GET"])
+def get_test_tools():
+    """Get the current test tools setting."""
+    return jsonify({
+        "success": True,
+        "enabled": _enable_test_tools
+    })
+
+
+@app.route("/api/settings/test_tools", methods=["POST"])
+def set_test_tools():
+    """Update the test tools setting."""
+    global _enable_test_tools
+    data = request.get_json()
+    enabled = data.get("enabled", False)
+    
+    _enable_test_tools = bool(enabled)
+    
+    # Apply to Discord bot if running
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        _bot.apply_tools_config({
+            "_test_tools_enabled": enabled
+        })
+    
+    logger.info(f"Test tools {'enabled' if enabled else 'disabled'}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "enabled": _enable_test_tools
+    })
+
+
+# ==================== Module Filter Settings ====================
+
+@app.route("/api/settings/module_filter", methods=["GET"])
+def get_module_filter():
+    """Get the current module filter configuration."""
+    from src.logger import DEFAULT_MODULE_FILTER
+    return jsonify({
+        "success": True,
+        "modules": DEFAULT_MODULE_FILTER
+    })
+
+
+@app.route("/api/settings/module_filter", methods=["POST"])
+def set_module_filter():
+    """Update the module filter configuration."""
+    data = request.get_json()
+    modules = data.get("modules", [])
+    
+    if not isinstance(modules, list):
+        return jsonify({
+            "success": False,
+            "error": "modules must be a list of module name strings"
+        }), 400
+    
+    # Validate module names (alphanumeric, underscores, dots, hyphens only)
+    import re
+    for mod in modules:
+        if not isinstance(mod, str) or not re.match(r'^[a-zA-Z0-9_.\-]+$', mod):
+            return jsonify({
+                "success": False,
+                "error": f"Invalid module name: {mod}"
+            }), 400
+    
+    # Update the logger's module filter
+    from src.logger import DEFAULT_MODULE_FILTER
+    DEFAULT_MODULE_FILTER.clear()
+    DEFAULT_MODULE_FILTER.update(modules)
+    
+    logger.info(f"Module filter updated: {modules}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "modules": list(DEFAULT_MODULE_FILTER)
+    })
+
+
+# ==================== Debug Panel Route ====================
+
+@app.route("/debug")
+def debug_panel():
+    """Render the debug panel page."""
+    return render_template("debug.html")
+
+
+# ==================== Session Management Endpoints ====================
+
+@app.route("/api/discord/sessions", methods=["GET"])
+def get_sessions():
+    """Get information about active Discord sessions."""
+    _bot = _get_discord_bot_instance()
+    if not _bot:
+        return jsonify({
+            "success": False,
+            "message": "Discord bot is not running",
+            "sessions": []
+        })
+    
+    try:
+        sessions = []
+        session_info = _bot.get_session_info()
+        # get_session_info() returns a dict with "channels" key (dict) and optionally "sessions" (list)
+        if isinstance(session_info, dict):
+            channels = session_info.get("channels", {})
+            if isinstance(channels, dict):
+                for channel_id, history_length in channels.items():
+                    # Get session data from session manager
+                    session_data = _bot._session_manager.get_session(channel_id)
+                    if session_data:
+                        started_at = session_data.get("started_at")
+                        sessions.append({
+                            "channel_id": channel_id,
+                            "user": session_data.get("author_name", "unknown"),
+                            "created_at": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "last_activity": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "message_count": 0,
+                            "history_length": history_length
+                        })
+            elif isinstance(channels, list):
+                # channels is a list of channel IDs
+                for channel_id in channels:
+                    session_data = _bot._session_manager.get_session(channel_id)
+                    if session_data:
+                        started_at = session_data.get("started_at")
+                        sessions.append({
+                            "channel_id": channel_id,
+                            "user": session_data.get("author_name", "unknown"),
+                            "created_at": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "last_activity": started_at.strftime("%Y-%m-%d %H:%M:%S") if started_at else "unknown",
+                            "message_count": 0,
+                            "history_length": 0
+                        })
+        
+        return jsonify({
+            "success": True,
+            "sessions": sessions,
+            "active_count": len(sessions)
+        })
+    except Exception as e:
+        logger.error(f"Error getting sessions: {e}", module="app", exc=True)
+        return jsonify({
+            "success": False,
+            "message": str(e),
+            "sessions": []
+        }), 500
+
+
+@app.route("/api/discord/clear_session", methods=["POST"])
+def clear_session():
+    """Clear the session for a specific Discord channel."""
+    _bot = _get_discord_bot_instance()
+    if not _bot:
+        return jsonify({
+            "success": False,
+            "message": "Discord bot is not running"
+        }), 400
+    
+    data = request.get_json()
+    channel_id = data.get("channel_id")
+    
+    if not channel_id:
+        return jsonify({
+            "success": False,
+            "message": "channel_id is required"
+        }), 400
+    
+    try:
+        _bot.clear_session(int(channel_id))
+        logger.info(f"Session cleared for channel {channel_id} via debug panel", module="app")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Session cleared for channel {channel_id}"
+        })
+    except Exception as e:
+        logger.error(f"Error clearing session: {e}", module="app", exc=True)
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/api/discord/clear_all_sessions", methods=["POST"])
+def clear_all_sessions():
+    """Clear all Discord sessions."""
+    _bot = _get_discord_bot_instance()
+    if not _bot:
+        return jsonify({
+            "success": False,
+            "message": "Discord bot is not running"
+        }), 400
+    
+    try:
+        # Get all active channel IDs
+        channels = _bot._session_manager.get_active_channels()
+        cleared_count = 0
+        
+        for channel_id in channels:
+            _bot.clear_session(int(channel_id))
+            cleared_count += 1
+        
+        logger.info(f"All {cleared_count} sessions cleared via debug panel", module="app")
+        
+        return jsonify({
+            "success": True,
+            "message": f"All {cleared_count} sessions cleared",
+            "cleared_count": cleared_count
+        })
+    except Exception as e:
+        logger.error(f"Error clearing all sessions: {e}", module="app", exc=True)
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
+@app.route("/api/tokens/debug/refresh", methods=["GET"])
+def get_debug_token_metrics():
+    """Get token metrics for debug panel."""
+    _bot = _get_discord_bot_instance()
+    if not _bot:
+        return jsonify({
+            "success": True,
+            "usage": None,
+            "message": "Discord bot is not running"
+        })
+    
+    try:
+        usage = _bot.get_last_discord_token_usage()
+        return jsonify({
+            "success": True,
+            "usage": usage
+        })
+    except Exception as e:
+        logger.error(f"Error getting token metrics: {e}", module="app", exc=True)
+        return jsonify({
+            "success": False,
+            "usage": None,
+            "message": str(e)
+        }), 500
+
+
+# ==================== LM Instance Manager Initialization ====================
+
+# Initialize the LM instance manager with config path and client reference
+# Path: src/app.py → src/ → test1/ → config.json
+_config_path = str(Path(__file__).parent.parent / "config.json")
+init_instance_manager(_config_path, client=client)
+
+# ==================== Tools Config Settings ====================
+
+@app.route("/api/tools_config", methods=["GET"])
+def get_tools_config():
+    """Get the current tools configuration."""
+    tools_config = config.get_tools_config()
+    # Ensure context compression settings are included
+    tools_config["context_compression_enabled"] = config.context_compression_enabled
+    tools_config["context_token_threshold"] = config.context_compression_token_threshold
+    tools_config["context_message_threshold"] = config.context_compression_message_threshold
+    tools_config["context_messages_to_keep_fresh"] = config.context_compression_messages_to_keep_fresh
+    tools_config["context_summary_length"] = config.context_compression_default_summary_length
+    tools_config["context_lm_max_tokens"] = config.get("tools_config", "context_lm_max_tokens", 4096)
+    return jsonify({
+        "success": True,
+        "tools_config": tools_config
+    })
+
+
+@app.route("/api/tools_config", methods=["POST"])
+def set_tools_config():
+    """Update the tools configuration."""
+    data = request.get_json()
+    tools_config = data.get("tools_config", {})
+    
+    # Validate reasoning_brevity
+    reasoning_brevity = tools_config.get("reasoning_brevity", config.tool_reasoning_brevity)
+    if not isinstance(reasoning_brevity, bool):
+        return jsonify({"success": False, "error": "reasoning_brevity must be a boolean"}), 400
+    
+    # Validate tool_max_tokens
+    tool_max_tokens = tools_config.get("tool_max_tokens", config.tool_max_tokens)
+    try:
+        tool_max_tokens = int(tool_max_tokens)
+        if tool_max_tokens < 128 or tool_max_tokens > 32768:
+            return jsonify({"success": False, "error": "tool_max_tokens must be between 128 and 32768"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid tool_max_tokens value"}), 400
+    
+    # Validate tool_temperature
+    tool_temperature = tools_config.get("tool_temperature", config.tool_temperature)
+    try:
+        tool_temperature = float(tool_temperature)
+        if tool_temperature < 0.0 or tool_temperature > 2.0:
+            return jsonify({"success": False, "error": "tool_temperature must be between 0.0 and 2.0"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid tool_temperature value"}), 400
+    
+    # Validate final_max_tokens
+    final_max_tokens = tools_config.get("final_max_tokens", config.final_max_tokens)
+    try:
+        final_max_tokens = int(final_max_tokens)
+        if final_max_tokens < 128 or final_max_tokens > 65536:
+            return jsonify({"success": False, "error": "final_max_tokens must be between 128 and 65536"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid final_max_tokens value"}), 400
+    
+    # Validate use_tool_calling
+    use_tool_calling = tools_config.get("use_tool_calling", config.tools_use_tool_calling)
+    if not isinstance(use_tool_calling, bool):
+        return jsonify({"success": False, "error": "use_tool_calling must be a boolean"}), 400
+    
+    # Validate and apply context compression settings
+    context_compression_enabled = tools_config.get("context_compression_enabled", config.context_compression_enabled)
+    if not isinstance(context_compression_enabled, bool):
+        return jsonify({"success": False, "error": "context_compression_enabled must be a boolean"}), 400
+    
+    context_token_threshold = tools_config.get("context_token_threshold", config.context_token_threshold)
+    try:
+        context_token_threshold = int(context_token_threshold)
+        if context_token_threshold < 50 or context_token_threshold > 95:
+            return jsonify({"success": False, "error": "context_token_threshold must be between 50 and 95"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid context_token_threshold value"}), 400
+    
+    context_message_threshold = tools_config.get("context_message_threshold", config.context_message_threshold)
+    try:
+        context_message_threshold = int(context_message_threshold)
+        if context_message_threshold < 5 or context_message_threshold > 50:
+            return jsonify({"success": False, "error": "context_message_threshold must be between 5 and 50"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid context_message_threshold value"}), 400
+    
+    context_messages_to_keep_fresh = tools_config.get("context_messages_to_keep_fresh", config.context_messages_to_keep_fresh)
+    try:
+        context_messages_to_keep_fresh = int(context_messages_to_keep_fresh)
+        if context_messages_to_keep_fresh < 2 or context_messages_to_keep_fresh > 15:
+            return jsonify({"success": False, "error": "context_messages_to_keep_fresh must be between 2 and 15"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid context_messages_to_keep_fresh value"}), 400
+    
+    context_summary_length = tools_config.get("context_summary_length", config.context_summary_length)
+    try:
+        context_summary_length = int(context_summary_length)
+        if context_summary_length < 100 or context_summary_length > 1000:
+            return jsonify({"success": False, "error": "context_summary_length must be between 100 and 1000"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid context_summary_length value"}), 400
+    
+    # Validate context_lm_max_tokens
+    context_lm_max_tokens = tools_config.get("context_lm_max_tokens", config.get("tools_config", "context_lm_max_tokens", 4096))
+    try:
+        context_lm_max_tokens = int(context_lm_max_tokens)
+        if context_lm_max_tokens < 128 or context_lm_max_tokens > 65536:
+            return jsonify({"success": False, "error": "context_lm_max_tokens must be between 128 and 65536"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid context_lm_max_tokens value"}), 400
+    
+    # Apply all settings
+    config.tool_reasoning_brevity = reasoning_brevity
+    config.tool_max_tokens = tool_max_tokens
+    config.tool_temperature = tool_temperature
+    config.final_max_tokens = final_max_tokens
+    config.tools_use_tool_calling = use_tool_calling
+    config.context_compression_enabled = context_compression_enabled
+    config.context_token_threshold = context_token_threshold
+    config.context_message_threshold = context_message_threshold
+    config.context_messages_to_keep_fresh = context_messages_to_keep_fresh
+    config.context_summary_length = context_summary_length
+    config.set("tools_config", "context_lm_max_tokens", context_lm_max_tokens)
+    config.save()
+    
+    # Apply to Discord bot if running
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        _bot.apply_tools_config({
+            "reasoning_brevity": reasoning_brevity,
+            "tool_max_tokens": tool_max_tokens,
+            "tool_temperature": tool_temperature,
+            "final_max_tokens": final_max_tokens,
+            "use_tool_calling": use_tool_calling,
+            "context_compression_enabled": context_compression_enabled,
+            "context_token_threshold": context_token_threshold,
+            "context_message_threshold": context_message_threshold,
+            "context_messages_to_keep_fresh": context_messages_to_keep_fresh,
+            "context_summary_length": context_summary_length,
+            "context_lm_max_tokens": context_lm_max_tokens
+        })
+    
+    logger.info(f"Tools config updated: tool_max_tokens={tool_max_tokens}, tool_temperature={tool_temperature}, final_max_tokens={final_max_tokens}, context_compression={context_compression_enabled}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "tools_config": config.get_tools_config()
+    })
+
+
+# ==================== Memory Database Path Settings ====================
+
+@app.route("/api/settings/memory_db_path", methods=["GET"])
+def get_memory_db_path():
+    """Get the current memory database path setting."""
+    return jsonify({
+        "success": True,
+        "memory_db_path": config.memory_db_path
+    })
+
+
+@app.route("/api/settings/memory_db_path", methods=["POST"])
+def set_memory_db_path():
+    """Update the memory database path setting."""
+    data = request.get_json()
+    db_path = data.get("memory_db_path", "data/memory.db")
+    
+    if not db_path or not db_path.strip():
+        return jsonify({
+            "success": False,
+            "error": "memory_db_path cannot be empty"
+        }), 400
+    
+    config.memory_db_path = db_path
+    config.save()
+    
+    # Apply to Discord bot if running — recreate MemoryTool with new path
+    _bot = _get_discord_bot_instance()
+    if _bot:
+        from src.tools.builtins.memory_tool import MemoryTool
+        new_memory_tool = MemoryTool(db_path=db_path)
+        _bot._memory_tool = new_memory_tool
+        _bot._memory_tool_path = db_path
+        # Re-register in tool registry
+        _bot._tool_registry.unregister(_bot._memory_tool)
+        _bot._tool_registry.register(new_memory_tool)
+        logger.info(f"MemoryTool recreated with db_path={db_path}", module="app")
+    
+    logger.info(f"Memory DB path set to: {db_path}", module="app")
+    
+    return jsonify({
+        "success": True,
+        "memory_db_path": config.memory_db_path
+    })
+
+
+# ==================== Blueprint Registration ====================
+
+# Create blueprints for modular routing
+chat_bp = Blueprint("chat", __name__)
+discord_bp = Blueprint("discord", __name__)
+lm_bp = Blueprint("lm", __name__)
+
+# Register endpoint modules
+register_chat_blueprints(chat_bp, client, config)
+register_discord_blueprints(discord_bp)
+register_lm_blueprints(lm_bp)
+
+# Register blueprints with main app
+app.register_blueprint(chat_bp)
+app.register_blueprint(discord_bp)
+app.register_blueprint(lm_bp)
+
+
+if __name__ == "__main__":
+    # Set up logging: enables terminal.log stdout redirection, Python logging bridge,
+    # and in-memory buffer for web UI log display.
+    # Must be inside this block to avoid truncation on Flask debug reloader restart.
+    setup_logging()
+    app.run(host="0.0.0.0", port=5000, debug=True)
