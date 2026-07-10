@@ -276,10 +276,10 @@ def set_max_tokens():
     data = request.get_json()
     tokens = data.get("max_tokens", 2500)
     
-    if not isinstance(tokens, int) or tokens < 1 or tokens > 8192:
+    if not isinstance(tokens, int) or tokens < 1 or tokens > 65536:
         return jsonify({
             "success": False,
-            "error": "Max tokens must be an integer between 1 and 8192"
+            "error": "Max tokens must be an integer between 1 and 65536"
         }), 400
     
     config.max_tokens = tokens
@@ -766,8 +766,8 @@ def set_tools_config():
     tool_max_tokens = tools_config.get("tool_max_tokens", config.tool_max_tokens)
     try:
         tool_max_tokens = int(tool_max_tokens)
-        if tool_max_tokens < 128 or tool_max_tokens > 32768:
-            return jsonify({"success": False, "error": "tool_max_tokens must be between 128 and 32768"}), 400
+        if tool_max_tokens < 128 or tool_max_tokens > 65536:
+            return jsonify({"success": False, "error": "tool_max_tokens must be between 128 and 65536"}), 400
     except (ValueError, TypeError):
         return jsonify({"success": False, "error": "Invalid tool_max_tokens value"}), 400
     

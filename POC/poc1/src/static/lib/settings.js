@@ -204,8 +204,8 @@ function updateLoggingStatusText(suppressed) {
 async function updateMaxTokens() {
     const input = document.getElementById('maxTokensInput');
     const tokens = parseInt(input.value);
-    if (isNaN(tokens) || tokens < 1 || tokens > 8192) {
-        addMessage('⚠️ Max tokens must be between 1 and 8192', 'error');
+    if (isNaN(tokens) || tokens < 1 || tokens > 65536) {
+        addMessage('⚠️ Max tokens must be between 1 and 65536', 'error');
         if (state?.maxTokens) input.value = state.maxTokens;
         return;
     }

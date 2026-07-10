@@ -185,8 +185,98 @@ The day addition behavior was undocumented and counterintuitive. Since the LLM c
 | BUG-003 | has_link filter matches image embeds | High | ✅ FIXED |
 | BUG-004 | Cancellation method naming | High | ✅ FIXED |
 | BUG-006 | Date filter day addition | Medium | ✅ FIXED |
+| BUG-007 | Channel search doesn't find image URLs in bot responses | High | ✅ FIXED (7/10/2026) |
 | BUG-001 | Empty response detection | Low | ✅ VERIFIED |
 | BUG-002 | None response text slicing | Low | ✅ VERIFIED |
+
+---
+
+## BUG-007: Channel Search Doesn't Find Image URLs in Bot Responses (SEARCH-003)
+
+**Location:** `src/discord_bot/tool_executor.py`, `src/discord_bot/bot_core.py`, `src/tools/builtins/channel_search.py`
+**Severity:** High
+**Status:** ✅ FIXED (7/10/2026)
+
+### Description
+When the bot searches for images (e.g., `search_query="image.png"`), it finds messages that reference image files but the **image URLs are not included** in the summarization results. This happens because:
+
+1. The bot's message text says "Based on the image URLs, the filename is image.png" but the actual CDN URLs are in the `image_urls` field of the **original message with image attachments**, which is outside the last 50 messages window.
+2. The `_format_messages_for_summarization` method only looks at the `image_urls` dict field, not the message content text.
+3. The mini-context summarization `max_tokens=1024` was too small, causing truncated responses.
+
+### Root Causes Identified
+1. **Text search filter** in `bot_core.py` and `channel_search.py` filtered out messages that had image URLs but whose text content didn't match the search query.
+2. **`_format_messages_for_summarization`** didn't extract image URLs from message content text using regex.
+3. **Referenced messages** (messages referenced by ID in other messages' content) were never fetched, so their `image_urls` field was never populated.
+4. **`max_tokens=1024`** was too small for the mini-context summarization, causing `finish_reason: "length"` and truncated responses.
+
+### Fixes Applied
+
+#### Fix 1: Text search filter preserves messages with image URLs (`bot_core.py` and `channel_search.py`)
+```python
+# Before: Only matched if text content contained search terms
+primary_match = any(word in content_text for word in search_query_words)
+if primary_match:
+    filtered.append(m)
+
+# After: Also preserves messages that have image URLs
+primary_match = any(word in content_text for word in search_query_words)
+if primary_match or has_image_urls:
+    filtered.append(m)
+```
+
+#### Fix 2: Extract image URLs from message content text (`tool_executor.py` - `_format_messages_for_summarization`)
+```python
+# Added regex pattern to extract image URLs from message content
+image_url_pattern = re.compile(
+    r'https?://[^\s<>\"\')\]]*\.(?:png|jpg|jpeg|gif|webp|bmp|svg)'
+    r'(?:[^\s<>\"\')]*)?',
+    re.IGNORECASE
+)
+
+# Extract URLs from content and add to image_urls list
+content_urls = image_url_pattern.findall(content)
+for url in content_urls:
+    while url and url[-1] in '.,;:!?)\'":]':
+        url = url[:-1]
+    if url and url not in image_urls:
+        image_urls.append(url)
+```
+
+#### Fix 3: Fetch referenced messages by message_id (`tool_executor.py` - new methods)
+```python
+@staticmethod
+def _extract_message_ids_from_content(messages: List[Dict]) -> List[tuple]:
+    """Extract message_id and channel_id references from message content."""
+    # Matches: Discord message links and "message `1524...`" patterns
+
+async def _fetch_referenced_messages(self, messages, bot, existing_ids):
+    """Fetch messages referenced by message_id in other messages' content."""
+    # Fetches referenced messages to get their actual image_urls field
+```
+
+#### Fix 4: Increase max_tokens for mini-context summarization (`tool_executor.py`)
+```python
+# Before: max_tokens: int = 1024
+# After:
+max_tokens: int = 4096
+```
+
+### Test Results
+✅ **47 unit tests pass** (25 new + 22 existing):
+- `test_message_reference_extraction.py`: 22 new tests
+  - `TestExtractMessageIdsFromContent`: 12 tests for Discord link and message ID extraction
+  - `TestFormatMessagesForSummarization`: 5 tests for image URL formatting
+  - `TestFormatMessagesForSummarizationEdgeCases`: 2 tests for edge cases
+  - `TestChannelSearchImageFiltering`: 3 tests for text search filter fix
+- `test_integration_channel_search.py`: 3 new tests
+  - `TestFormatMessagesForSummarizationIntegration`: 2 tests
+  - `TestLMStudioConnectivity`: 2 tests (including live LMStudio integration)
+  - `TestExtractMessageIdsFromContentIntegration`: 1 test
+- LMStudio integration test **PASSED** — LMStudio correctly found and returned image URLs
+
+### Verification
+The fix was verified by restarting the bot and testing with `search_query="image.png"`. The bot successfully found and returned 3 `image.png` URLs from the channel history.
 
 ---
 
@@ -202,7 +292,18 @@ The day addition behavior was undocumented and counterintuitive. Since the LLM c
 - `TestCancellationManager` - Tests for cancellation system (3 tests)
 - `TestMiniContextSummarization` - Tests for context summarization (2 tests)
 
-**Total: 22 tests, all passing**
+### test_message_reference_extraction.py (NEW)
+- `TestExtractMessageIdsFromContent` - Tests for message ID extraction from content (12 tests)
+- `TestFormatMessagesForSummarization` - Tests for image URL formatting (5 tests)
+- `TestFormatMessagesForSummarizationEdgeCases` - Tests for edge cases (2 tests)
+- `TestChannelSearchImageFiltering` - Tests for text search filter with image URLs (3 tests)
+
+### test_integration_channel_search.py (NEW)
+- `TestFormatMessagesForSummarizationIntegration` - Tests for message formatting with image URLs (2 tests)
+- `TestLMStudioConnectivity` - Tests for LMStudio integration (2 tests)
+- `TestExtractMessageIdsFromContentIntegration` - Tests for real-world message patterns (1 test)
+
+**Total: 47 tests, all passing**
 
 ---
 
@@ -211,4 +312,9 @@ The day addition behavior was undocumented and counterintuitive. Since the LLM c
 1. ✅ **BUG-003**: Fixed `channel_search.py` to properly check for link-type embeds
 2. ✅ **BUG-004**: Fixed `bot_core.py` to use `request_cancel()` method
 3. ✅ **BUG-006**: Fixed `channel_search.py` to remove day addition from `after_date` filter
-4. All 22 unit tests pass
+4. ✅ **BUG-007**: Fixed channel_search image URL extraction (7/10/2026)
+   - Text search filter preserves messages with image URLs
+   - Image URLs extracted from message content using regex
+   - Referenced messages fetched by message_id for actual image_urls
+   - max_tokens increased from 1024 to 4096
+5. All 47 unit tests pass

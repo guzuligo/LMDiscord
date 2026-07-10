@@ -699,6 +699,9 @@ class DiscordBot:
             
             if not has_operators:
                 # Standard text search with naive filtering (original behavior)
+                # NOTE: Messages with image URLs are always included regardless of text match,
+                # because the user may be searching for an image that was posted without
+                # the search term in the message text.
                 query_parts = raw_query.split()
                 primary_keyword = query_parts[0].lower() if query_parts else ""
                 secondary_keywords = [k.lower() for k in query_parts[1:]]
@@ -709,6 +712,10 @@ class DiscordBot:
                     attachment_names = [a or "" for a in m.get("attachments", [])]
                     image_urls_list = [u or "" for u in m.get("image_urls", [])]
                     replied_content = (m.get("replied_to_content") or "").lower()
+                    
+                    # Always include messages that have image URLs — they may contain
+                    # the image the user is looking for even if the text doesn't match
+                    has_image_urls = len(image_urls_list) > 0
                     
                     # Primary keyword: check content, attachments, image_urls
                     primary_match = (
@@ -732,8 +739,8 @@ class DiscordBot:
                                 secondary_match = False
                                 break
                     
-                    # Primary must match AND all secondary keywords must match
-                    if primary_match and secondary_match:
+                    # Include message if text matches OR if it has image URLs
+                    if (primary_match and secondary_match) or has_image_urls:
                         filtered.append(m)
                 all_messages = filtered
             # else: has_operators detected — skip bot-layer filtering, pass all messages to tool layer
@@ -823,7 +830,7 @@ class DiscordBot:
                 window_messages = fetched[start_idx:start_idx + limit]
 
                 for msg in window_messages:
-                    msg_data = await self._format_message(msg)
+                    msg_data = await self._format_message(msg, skip_bot=False)
                     if msg_data:
                         all_messages.append(msg_data)
 
@@ -832,17 +839,19 @@ class DiscordBot:
 
         return all_messages
 
-    async def _format_message(self, msg) -> Optional[Dict[str, Any]]:
+    async def _format_message(self, msg, *, skip_bot: bool = True) -> Optional[Dict[str, Any]]:
         """Format a Discord message into a structured dict.
 
         Args:
             msg: The discord.Message object.
+            skip_bot: If True, skip bot's own messages (default True for backward compatibility).
+                      Set to False to include bot messages (useful for channel search).
 
         Returns:
             Message dict or None.
         """
-        # Skip bot's own messages
-        if msg.author == self.client.user:
+        # Skip bot's own messages (only when skip_bot is True)
+        if skip_bot and msg.author == self.client.user:
             return None
 
         # Gather image URLs
@@ -988,7 +997,7 @@ class DiscordBot:
                 return {"error": "Channel not found", "message": None}
 
             msg = await channel.fetch_message(message_id)
-            formatted = await self._format_message(msg)
+            formatted = await self._format_message(msg, skip_bot=False)
             if formatted:
                 return {"message": formatted}
             return {"message": None}
@@ -1123,8 +1132,8 @@ class DiscordBot:
                     if author_name != effective_from.lower() and display_name != effective_from.lower() and effective_from.lower() not in msg.author.name.lower():
                         continue
 
-                # Full formatting (message passed pre-filters)
-                msg_data = await self._format_message(msg)
+                # Full formatting (message passed pre-filters) — include bot messages for channel search
+                msg_data = await self._format_message(msg, skip_bot=False)
                 if msg_data is None:
                     continue
 
