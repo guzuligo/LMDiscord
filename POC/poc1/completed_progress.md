@@ -1530,3 +1530,62 @@ ValueError: Blocked: disallowed content type 'text/plain' (expected one of {...}
 ---
 
 *Last updated: 2026-06-03*
+
+---
+
+## BUG-007: Channel Search Doesn't Find Image URLs in Bot Responses (2026-07-10)
+
+**Status**: ✅ **COMPLETED**
+
+**Problem**: When the bot searches for images (e.g., `search_query="image.png"`), it finds messages that reference image files but the image URLs are NOT included in the summarization results. The bot responds with "I couldn't find any image file with that name" even though image.png files exist in the channel.
+
+**Root Cause**: Multiple issues:
+1. Text search filter in `bot_core.py` and `channel_search.py` filtered out messages with image URLs when text content didn't match the search query
+2. `_format_messages_for_summarization` in `tool_executor.py` only looked at the `image_urls` dict field, not message content text where image URLs might be embedded
+3. Referenced messages (messages referenced by ID in other messages' content) were never fetched, so their `image_urls` field was never populated
+4. Mini-context summarization `max_tokens=1024` was too small, causing `finish_reason: "length"` and truncated responses
+
+**Solution Applied**:
+
+1. **Text search filter preserves messages with image URLs** (`bot_core.py` and `channel_search.py`):
+   ```python
+   # After: Also preserves messages that have image URLs
+   primary_match = any(word in content_text for word in search_query_words)
+   if primary_match or has_image_urls:
+       filtered.append(m)
+   ```
+
+2. **Extract image URLs from message content text** (`tool_executor.py` - `_format_messages_for_summarization`):
+   ```python
+   # Added regex pattern to extract image URLs from message content
+   image_url_pattern = re.compile(
+       r'https?://[^\s<>\"\')\]]*\.(?:png|jpg|jpeg|gif|webp|bmp|svg)'
+       r'(?:[^\s<>\"\')]*)?',
+       re.IGNORECASE
+   )
+   ```
+
+3. **Fetch referenced messages by message_id** (`tool_executor.py` - new methods):
+   - `_extract_message_ids_from_content()`: Extracts message IDs from Discord links and "message `1524...`" patterns
+   - `_fetch_referenced_messages()`: Fetches referenced messages to get their actual `image_urls` field
+   - Wired into `_handle_channel_search()` after messages are fetched
+
+4. **Increase max_tokens for mini-context summarization** (`tool_executor.py`):
+   ```python
+   # Before: max_tokens: int = 1024
+   # After:
+   max_tokens: int = 4096
+   ```
+
+**Files Modified**:
+- `src/discord_bot/tool_executor.py` — Added 2 new methods, modified `_format_messages_for_summarization`, modified `_summarize_channel_search_batched`, wired `_fetch_referenced_messages` into `_handle_channel_search`
+- `src/discord_bot/bot_core.py` — Text search filter fix
+- `src/tools/builtins/channel_search.py` — Text search filter fix
+
+**New Test Files**:
+- `tests/test_message_reference_extraction.py` — 22 unit tests
+- `tests/test_integration_channel_search.py` — 5 integration tests (including live LMStudio API test)
+
+**Test Results**: ✅ 47 unit tests pass (25 new + 22 existing), LMStudio integration test PASSED
+
+**Live Test Verification**: ✅ Verified 2026-07-10: User sent "search for the image image.png and show it here" → Bot searched → Found 3 image.png URLs → LMStudio correctly summarized with all URLs → Bot responded with all 3 image.png CDN links

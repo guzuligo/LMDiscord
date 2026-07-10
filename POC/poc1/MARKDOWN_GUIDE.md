@@ -4,6 +4,16 @@ This project uses several `.md` files to track progress, issues, and fixes. Here
 
 ---
 
+## 💡 Important: Keep It Simple
+
+> **All markdown files in this project (except `README.md`) are primarily for the AI developer agent.**
+> - Do **NOT** over-engineer them with excessive formatting, elaborate tables, or verbose explanations.
+> - Keep content **concise, factual, and actionable**.
+> - `README.md` is the only file meant for human readers — it should be polished and comprehensive.
+> - You (the human) may read these files, but you rely on the AI to interpret and act on them.
+
+---
+
 ## 📋 Progress Tracking
 
 ### `implementation_progress.md` — **In-Progress & Pending Items**
@@ -37,6 +47,13 @@ This project uses several `.md` files to track progress, issues, and fixes. Here
 
 ---
 
+## 🧪 Testing
+
+### `UNIT_INTEGRATION_TESTING_GUID.md` — **Unit & Integration Testing Guide**
+- **Purpose**: Reference guide for writing and running unit and integration tests
+- **When to use**: As a reference for test standards, frameworks, and execution commands
+- **Covers**: Unit testing (isolated component tests), integration testing (cross-component tests), test environment setup, pytest usage
+
 ## 📝 Planning
 
 ### `bug_fix_plan.md` — **Bug Fix Plans**
@@ -54,6 +71,7 @@ This project uses several `.md` files to track progress, issues, and fixes. Here
 | `issues_tracker.md` | Open bugs & problems | Active |
 | `solved_issues.md` | Fixed issues archive | Historical |
 | `bug_fix_plan.md` | Complex bug fix plans | Per-incident |
+| `UNIT_INTEGRATION_TESTING_GUID.md` | Unit & integration testing reference | Reference |
 
 ---
 
@@ -64,3 +82,4 @@ This project uses several `.md` files to track progress, issues, and fixes. Here
 2. Add to implementation_progress.md or issues_tracker.md
 3. Work on it
 4. Move to completed_progress.md or solved_issues.md when done
+5. Write tests following UNIT_INTEGRATION_TESTING_GUID.md

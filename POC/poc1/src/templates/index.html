@@ -61,8 +61,8 @@
         </div>
         <div class="settings-section settings-row-2">
             <span class="toggle-label">🧠 LM Studio Max Tokens:</span>
-            <input type="number" class="delay-input" id="maxTokensInput" min="1" max="8192" value="2500" onchange="updateMaxTokens()">
-            <span class="toggle-label">tokens (range: 1-8192)</span>
+            <input type="number" class="delay-input" id="maxTokensInput" min="1" max="65536" value="25000" onchange="updateMaxTokens()">
+            <span class="toggle-label">tokens (range: 1-65536)</span>
             <span id="maxTokensStatusText" class="delay-value-display">Loading...</span>
         </div>
         <div class="settings-section settings-row-2">
@@ -302,8 +302,8 @@
                     <div class="tools-config-grid">
                         <div class="tools-config-item">
                             <label class="tools-config-label">Max Tokens:</label>
-                            <input type="number" class="tools-config-input" id="toolMaxTokens" min="128" max="32768" step="128" value="2048">
-                            <span class="tools-config-desc">Maximum response tokens for tool calls (default: 2048)</span>
+                            <input type="number" class="tools-config-input" id="toolMaxTokens" min="128" max="65536" step="128" value="20480">
+                            <span class="tools-config-desc">Maximum response tokens for tool calls (default: 20480)</span>
                         </div>
                         <div class="tools-config-item">
                             <label class="tools-config-label">Temperature:</label>
@@ -320,8 +320,8 @@
                     <div class="tools-config-grid">
                         <div class="tools-config-item">
                             <label class="tools-config-label">Max Tokens:</label>
-                            <input type="number" class="tools-config-input" id="finalMaxTokens" min="128" max="65536" step="128" value="8192">
-                            <span class="tools-config-desc">Maximum response tokens for final responses (default: 8192)</span>
+                            <input type="number" class="tools-config-input" id="finalMaxTokens" min="128" max="65536" step="128" value="81920">
+                            <span class="tools-config-desc">Maximum response tokens for final responses (default: 81920)</span>
                         </div>
                     </div>
                 </div>

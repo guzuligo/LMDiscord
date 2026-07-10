@@ -79,7 +79,7 @@ class ChannelSearchTool(BaseTool):
             "(all act as AND — if specified, all must match). "
             "For single-word search_query: matches only in message content (not file names). "
             "For multi-word search_query: ALL words must appear somewhere in the message. "
-            "Optional: limit (default 15, max 50), compress_long (truncate long messages). "
+            "Optional: limit (default 50, max 50), compress_long (truncate long messages). "
             "For accessing older messages: use offset to skip recent messages, and windows to fetch "
             "multiple non-contiguous message windows (max 5 windows). Each window fetches 'limit' messages. "
             "For searching deeper into message history (older than the last 50 messages): use "
@@ -98,8 +98,8 @@ class ChannelSearchTool(BaseTool):
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Number of recent messages to fetch per channel (default: 15, max: 50)",
-                    "default": 15,
+                    "description": "Number of recent messages to fetch per channel (default: 50, max: 50). Always fetches the maximum to ensure the search sees all recent messages.",
+                    "default": 50,
                     "minimum": 1,
                     "maximum": 50
                 },
@@ -244,7 +244,7 @@ class ChannelSearchTool(BaseTool):
         # Build a cache key from the key search parameters
         cache_params = {
             "channel": kwargs.get("channel", ""),
-            "limit": kwargs.get("limit", 15),
+            "limit": kwargs.get("limit", 50),
             "search_query": kwargs.get("search_query", ""),
             "username": kwargs.get("username", ""),
         }
@@ -381,17 +381,8 @@ class ChannelSearchTool(BaseTool):
                     content=""
                 )
 
-            # Recommendation 5: When no filters are specified, reduce limit to avoid wasting tokens
-            # Return only the 5 most recent messages instead of fetching the full limit
-            # BUT: don't apply this optimization when filters are present
-            has_any_filter = (
-                has_image_param or has_link_param or has_file_param or has_video_param or has_audio_param
-                or username_filter or after_date_param or before_date_param or search_query_words
-            )
-            if not has_any_filter:
-                # Apply a reduced limit for unfiltered queries
-                effective_limit = min(5, len(messages) if messages else 5)
-                messages = messages[:effective_limit]
+            # Note: Bot layer always fetches 50 messages, so no need to reduce limit here.
+            # All messages are passed through for filtering.
 
             # =========================================================================
             # STEP 1: Apply OR logic for has_* parameters
@@ -536,12 +527,19 @@ class ChannelSearchTool(BaseTool):
             # STEP 5: Apply AND logic for search_query
             # Single word: match only in message content (not file names)
             # Multiple words: ALL words must appear somewhere in the message content (AND)
+            # NOTE: Messages with image URLs are always included regardless of text match,
+            # because the user may be searching for an image that was posted without
+            # the search term in the message text.
             # =========================================================================
             if search_query_words:
                 filtered = []
                 for m in messages:
                     content_text = m.get("content", "").lower()
                     replied_content = (m.get("replied_to_content") or "").lower()
+                    
+                    # Always include messages that have image URLs — they may contain
+                    # the image the user is looking for even if the text doesn't match
+                    has_image_urls = bool(m.get("image_urls", []))
                     
                     if len(search_query_words) == 1:
                         # Single word: match in content only (not file/attachment names)
@@ -557,7 +555,8 @@ class ChannelSearchTool(BaseTool):
                                 word_match = False
                                 break
                     
-                    if word_match:
+                    # Include message if text matches OR if it has image URLs
+                    if word_match or has_image_urls:
                         filtered.append(m)
                 messages = filtered
 

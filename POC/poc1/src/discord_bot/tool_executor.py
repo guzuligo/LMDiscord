@@ -774,6 +774,14 @@ class ToolCallHandler:
             messages = result.get("messages", [])
             available_channels = result.get("available_channels", {})
 
+            # NEW: Extract message_id references from message content and fetch
+            # the referenced messages to get their actual image_urls.
+            # This catches cases where the bot says "I found images in message 1524..."
+            # but the image URLs are only in the original message's image_urls field.
+            if bot and messages:
+                existing_ids = {m.get("message_id") for m in messages if m.get("message_id")}
+                messages = await self._fetch_referenced_messages(messages, bot, existing_ids)
+
             # If message_id was provided but get_channel_messages didn't fetch it,
             # try fetching from the original channel_id from the link
             if message_id and not any(m.get("id") == str(message_id) for m in messages):
@@ -984,6 +992,111 @@ class ToolCallHandler:
         await self._handle_context_compress(func_args, messages_for_lm, tool_call_id, make_lm_call_func)
         return None
 
+    # --- Message Reference Extraction ---
+
+    @staticmethod
+    def _extract_message_ids_from_content(messages: List[Dict]) -> List[tuple]:
+        """Extract message_id and channel_id references from message content.
+
+        Scans message content for patterns like:
+        - "message `1524101243654373617`"
+        - "message 1524101243654373617"
+        - Discord message links: https://discord.com/channels/GUILD/CHANNEL/MESSAGE
+        - https://discordapp.com/channels/GUILD/CHANNEL/MESSAGE
+
+        Returns:
+            List of tuples (message_id, channel_id, source_message_index).
+        """
+        references = []
+
+        # Pattern 1: Discord message links
+        link_pattern = re.compile(
+            r'(?:discord\.com|discordapp\.com)/channels/\d+/(\d+)/(\d+)'
+        )
+
+        # Pattern 2: "message `123456...`" or "message 123456..."
+        message_pattern = re.compile(
+            r'message\s+[`\'"]?(\d{17,20})[`\'"]?'
+        )
+
+        for idx, msg in enumerate(messages):
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+
+            # Check for Discord message links
+            for match in link_pattern.finditer(content):
+                channel_id = match.group(1)
+                message_id = match.group(2)
+                references.append((message_id, channel_id, idx))
+
+            # Check for "message `123456...`" pattern
+            for match in message_pattern.finditer(content):
+                message_id = match.group(1)
+                # Use the message's own channel_id as fallback
+                channel_id = msg.get("channel_id", "")
+                if channel_id:
+                    references.append((message_id, channel_id, idx))
+
+        return references
+
+    async def _fetch_referenced_messages(
+        self,
+        messages: List[Dict],
+        bot: Any,
+        existing_ids: set
+    ) -> List[Dict]:
+        """Fetch messages referenced by message_id in other messages' content.
+
+        After channel search returns results, scan message content for
+        message_id references (e.g., "message `1524101243654373617`" or
+        Discord message links). Fetch those referenced messages to get
+        their actual image_urls.
+
+        Args:
+            messages: List of message dicts from channel search.
+            bot: The DiscordBot instance.
+            existing_ids: Set of already-fetched message IDs to avoid duplicates.
+
+        Returns:
+            Updated messages list with referenced messages prepended.
+        """
+        references = self._extract_message_ids_from_content(messages)
+        fetched = []
+
+        for message_id, channel_id, _ in references:
+            # Avoid fetching the same message twice
+            if message_id in existing_ids:
+                continue
+
+            try:
+                msg_data = await bot.get_message_by_id(
+                    int(channel_id), int(message_id)
+                )
+                if msg_data and msg_data.get("message"):
+                    fetched_msg = msg_data["message"]
+                    logger.info(
+                        f"[channel_search] Fetched referenced message {message_id}: "
+                        f"has_image={fetched_msg.get('has_image', False)}, "
+                        f"image_urls count={len(fetched_msg.get('image_urls', []))}"
+                    )
+                    fetched.append(fetched_msg)
+                    existing_ids.add(message_id)
+            except Exception as e:
+                logger.warning(
+                    f"[channel_search] Failed to fetch referenced message {message_id}: {e}"
+                )
+
+        # Prepend fetched messages to the beginning
+        if fetched:
+            messages = fetched + messages
+            logger.info(
+                f"[channel_search] Fetched {len(fetched)} referenced message(s) "
+                f"with {sum(len(m.get('image_urls', [])) for m in fetched)} total image URLs"
+            )
+
+        return messages
+
     # --- Helper Methods ---
 
     @staticmethod
@@ -1071,6 +1184,14 @@ class ToolCallHandler:
 
     def _format_messages_for_summarization(self, messages: List[Dict]) -> str:
         """Format messages into a text block suitable for mini-context summarization."""
+        # Regex pattern to match Discord CDN image URLs and other image URLs
+        import re
+        image_url_pattern = re.compile(
+            r'https?://[^\s<>\"\')\]]*\.(?:png|jpg|jpeg|gif|webp|bmp|svg)'
+            r'(?:[^\s<>\"\')]*)?',
+            re.IGNORECASE
+        )
+
         lines = []
         for i, msg in enumerate(messages, 1):
             author = msg.get("display_name", msg.get("author", "Unknown"))
@@ -1081,7 +1202,19 @@ class ToolCallHandler:
             replied_to_content = msg.get("replied_to_content")
             channel_name = msg.get("_channel_name", "")
             has_image = msg.get("has_image", False)
-            image_urls = msg.get("image_urls", [])
+            image_urls = list(msg.get("image_urls", []))  # copy to avoid modifying original
+
+            # Extract image URLs from message content text using regex
+            # This catches URLs that were embedded in the message text but
+            # weren't captured in the image_urls field (e.g., bot responses
+            # that reference image URLs in their text)
+            content_urls = image_url_pattern.findall(content)
+            for url in content_urls:
+                # Clean up trailing punctuation that regex might have captured
+                while url and url[-1] in '.,;:!?)\'":]':
+                    url = url[:-1]
+                if url and url not in image_urls:
+                    image_urls.append(url)
 
             if is_reply and replied_to_author:
                 reply_preview = replied_to_content[:80] if replied_to_content else ""
@@ -1090,7 +1223,7 @@ class ToolCallHandler:
                 lines.append(f"[#{channel_name}]")
             lines.append(f"--- Message {i} by {author} at {timestamp} ---")
             lines.append(content)
-            if has_image and image_urls:
+            if image_urls:
                 urls_str = ", ".join(image_urls)
                 lines.append(f"[Contains {len(image_urls)} image(s): {urls_str}]")
             elif has_image:
@@ -1104,7 +1237,7 @@ class ToolCallHandler:
         user_feedback: str,
         make_lm_call_func: Any,
         batch_size: int = 10,
-        max_tokens: int = 1024
+        max_tokens: int = 4096
     ) -> str:
         """Summarize channel search results using mini-context batched summarization."""
         total = len(messages)
@@ -1120,14 +1253,16 @@ class ToolCallHandler:
                 f"These are recent Discord messages from a channel search. "
                 f"Search query was: '{search_query}'"
                 f"{' User context: ' + user_feedback if user_feedback else ''}."
-                f"\n\nPlease provide a concise summary of the key points, "
-                f"topics discussed, and any relevant information. "
-                f"Focus on facts, decisions, and actionable items. "
-                f"Keep the summary under 150 words.\n\n"
-                f"IMPORTANT: You MUST provide a meaningful summary. "
-                f"If any messages contain image URLs, list them. "
-                f"If any messages contain important information, mention it. "
-                f"DO NOT return an empty summary.\n\n---\n{batch_text}"
+                f"\n\nYour task: Summarize the key points AND list ALL image URLs found.\n\n"
+                f"RULES (MUST FOLLOW):\n"
+                f"1. If any message contains image URLs (lines like '[Contains X image(s): https://...]'), you MUST list every image URL in the summary.\n"
+                f"2. If any message contains file/attachment links, list them.\n"
+                f"3. Mention the authors and key content of messages.\n"
+                f"4. Keep the summary concise but DO NOT skip image URLs.\n\n"
+                f"REQUIRED OUTPUT FORMAT:\n"
+                f"- First list all image URLs found (if any)\n"
+                f"- Then summarize key points/topics\n\n"
+                f"DO NOT return an empty or near-empty summary. You must include at least the image URLs and a brief description.\n\n---\n{batch_text}"
             )
 
             mini_context = [{"role": "user", "content": summarization_prompt}]

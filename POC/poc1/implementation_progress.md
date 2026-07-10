@@ -379,6 +379,25 @@
 
 ---
 
+---
+
+### ✅ BUG-007: Channel Search Image URL Extraction Fix (2026-07-10)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-007 |
+| **Date Implemented** | 2026-07-10 |
+| **Status** | ✅ Implemented |
+| **Description** | Channel search was not finding image URLs in bot responses. When the bot searched for images (e.g., `search_query="image.png"`), it found messages that referenced image files but the image URLs were NOT included in the summarization results. |
+| **Root Causes** | 1. Text search filter filtered out messages with image URLs when text didn't match. 2. `_format_messages_for_summarization` didn't extract image URLs from message content text. 3. Referenced messages by message_id were never fetched. 4. `max_tokens=1024` was too small for mini-context summarization. |
+| **Fixes Applied** | 1. Text search filter preserves messages with image URLs (`bot_core.py`, `channel_search.py`). 2. Image URLs extracted from message content using regex (`tool_executor.py` — `_format_messages_for_summarization`). 3. New `_extract_message_ids_from_content()` and `_fetch_referenced_messages()` methods to fetch referenced messages by ID (`tool_executor.py`). 4. `max_tokens` increased from 1024 to 4096 for mini-context summarization (`tool_executor.py`). |
+| **Files Modified** | `src/discord_bot/tool_executor.py`, `src/discord_bot/bot_core.py`, `src/tools/builtins/channel_search.py` |
+| **New Test Files** | `tests/test_message_reference_extraction.py` (22 tests), `tests/test_integration_channel_search.py` (5 tests) |
+| **Test Results** | ✅ 47 unit tests pass (25 new + 22 existing), LMStudio integration test PASSED |
+| **Live Verification** | ✅ Verified 2026-07-10: Bot successfully found and returned 3 image.png CDN URLs from channel history |
+
+---
+
 ## Architecture Notes
 
 ### Module Structure (Post-Refactoring)

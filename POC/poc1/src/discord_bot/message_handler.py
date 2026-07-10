@@ -48,7 +48,7 @@ class MessageHandler:
         lm_studio_client: Any,
         system_prompt: str = "You are a helpful assistant in a Discord server.",
         temperature: float = 0.7,
-        max_tokens: int = 2500,
+        max_tokens: int = 25000,
         use_tool_calling: bool = True,
         tools: Optional[List[Dict[str, Any]]] = None,
         executor: Optional[ThreadPoolExecutor] = None,
@@ -56,10 +56,11 @@ class MessageHandler:
         allowed_image_hostnames: Optional[List[str]] = None,
         lm_studio_lock: Optional[Any] = None,
         # Tools config (REASONING-FIX)
+        # Updated defaults for modern models (10x increase from oldschool limits)
         reasoning_brevity: bool = True,
-        tool_max_tokens: int = 2048,
+        tool_max_tokens: int = 20480,
         tool_temperature: float = 0.3,
-        final_max_tokens: int = 8192,
+        final_max_tokens: int = 81920,
         max_tool_turns: int = 5,
         bot_instance: Any = None,
         # Memory integration
@@ -138,9 +139,9 @@ class MessageHandler:
     def apply_tools_config(
         self,
         reasoning_brevity: bool = True,
-        tool_max_tokens: int = 2048,
+        tool_max_tokens: int = 20480,
         tool_temperature: float = 0.3,
-        final_max_tokens: int = 8192,
+        final_max_tokens: int = 81920,
         use_tool_calling: bool = True,
         # Context compression settings
         context_compression_enabled: bool = True,
@@ -261,7 +262,7 @@ class MessageHandler:
             "    - '@channelname' — search by channel name (e.g., '@c3', '@general')\n"
             "    - 'this' — search the current active session channel\n"
             "    - leave empty or omit — search ALL visible channels\n"
-            "  Optional parameters: limit (default 15, max 50), search_query (text filter), username (author filter), compress_long (truncate long messages)\n"
+            "  Optional parameters: limit (default 50, max 50), search_query (text filter), username (author filter), compress_long (truncate long messages)\n"
             "  IMPORTANT: If the user shares a Discord message link (e.g., discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID), you MUST include both 'message_id' and 'channel_id' parameters extracted from the link to fetch that specific message directly.\n"
             "- 'memory_tool': Call this to search, save, or manage long-term memory. Use 'search' action to recall relevant memories, 'save' to store important information, or 'delete' to remove outdated memories.\n"
             "- 'context_compress': Call this when conversation history grows too large and you need to compress old messages into a summary to free up context space. Use compress_before_index to specify where to start compression. This helps prevent context overload errors.\n"
@@ -274,13 +275,13 @@ class MessageHandler:
             "2. USE TOOLS EFFICIENTLY: When you have enough information, respond immediately. Do not call tools unnecessarily.\n"
             "3. AVOID REDUNDANT CALLS: Do not call the same tool multiple times with the same arguments. If you already have the information, use it.\n"
             "4. SEARCH QUERY REQUIREMENT: When using channel_search with a search_query, the query must be at least 2 characters long. Shorter queries will be rejected.\n"
-            "5. UNFILTERED QUERIES: When searching without filters (no search_query, no username), only the 5 most recent messages are returned for efficiency.\n"
+            "5. The bot always fetches 50 messages per channel search for comprehensive results.\n"
             "\n--- SEARCH WORKFLOW (SEARCH-001) ---\n"
             "When the user asks about OLD messages or you need to search beyond recent history:\n"
-            "1. START with channel_search(channel='this', limit=15, search_query='keyword') — scans last ~15 messages\n"
+            "1. START with channel_search(channel='this', limit=50, search_query='keyword') — scans last ~50 messages\n"
             "2. If no results, use the oldest_message_id from the result to search deeper:\n"
             "   channel_search(channel='this', search_query='keyword', before_message_id=<oldest_id>, max_pages=3)\n"
-            "   This scans 3 pages × 15 = 45 more messages (total ~60)\n"
+            "   This scans 3 pages × 50 = 150 more messages (total ~200)\n"
             "3. If you need to go back further but don't need message CONTENT, use channel_skip to fast-forward:\n"
             "   channel_skip(channel='this', count=50) — returns only IDs + timestamps + media indicators\n"
             "   Use the oldest ID from skip results with before_message_id to anchor deeper searches\n"
