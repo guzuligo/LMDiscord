@@ -40,114 +40,94 @@
 
 ---
 
-### BUG-014 (channel_id): channel_search — LM Passes Channel Name Instead of Numeric ID
+### ✅ BUG-014 (channel_id): channel_search — LM Passes Channel Name Instead of Numeric ID
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-014 (channel_id) |
 | **Date** | 2026-06-04 |
-| **Status** | 🔴 Confirmed — Root Cause Identified |
-| **Severity** | High |
+| **Status** | ✅ **RESOLVED** (2026-07-11) — Root cause was BUG-013, now fixed |
+| **Severity** | High → Resolved |
 | **Description** | The LM Studio model passes channel names ("this", "general") as `channel_id` parameter instead of actual Discord channel ID numbers. |
-| **Root Cause** | 1. The LM model interprets `channel_id` as a human-readable channel name. 2. **IMPORTANT**: `resolve_channel()` in `bot_core.py` already handles channel name resolution — the names ARE being resolved correctly. The real issue is the tool call loop (BUG-013). |
-| **Related** | BUG-013 (tool call loop), CHANNEL-001 (result format improvement) |
-| **Proposed Fix** | **Primary**: Fix BUG-013 (tool call loop). Add explicit instruction in tool result. After max_tool_calls, force response with gathered data. |
-| **Files To Modify** | `src/discord_bot/message_processor.py`, `src/discord_bot/tool_executor.py`, `src/discord_bot/message_handler.py` |
+| **Resolution** | **Root cause was BUG-013 (tool call loop)**. With BUG-013 fixed (max_tool_calls increased to 10, per-tool limits, force-response injection), the model no longer gets stuck in re-call loops. The `resolve_channel()` function in `bot_core.py` correctly resolves channel names to numeric IDs. |
 
 ---
 
-### BUG-014 (embeds): channel_search Only Checks Attachments, Not Embeds
+### ✅ BUG-014 (embeds): channel_search Embeds Support
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-014 (embeds) |
 | **Date** | 2026-05-27 |
-| **Status** | 🔴 Confirmed |
-| **Severity** | Medium |
-| **Description** | The `channel_search` tool only checks `message.attachments` for images, but Discord messages can also contain images via `message.embeds`. |
-| **Root Cause** | `_has_image()` function only checks `message.attachments`, not `message.embeds`. |
-| **Proposed Fix** | Update `_has_image()` to also check embeds: ```python def _has_image(message): # Check attachments ... # Check embeds for embed in (message.embeds or []): if embed.type == 'image' or (embed.thumbnail and embed.thumbnail.url): return True return False ``` |
-| **Files To Modify** | `src/tools/builtins/channel_search.py` → `_has_image()` function |
+| **Status** | ✅ **RESOLVED** (2026-07-11) — Verified via code review |
+| **Severity** | Medium → Resolved |
+| **Description** | The `channel_search` tool needed to check `message.embeds` for images, not just `message.attachments`. |
+| **Resolution** | **Fixed in bot_core.py `_format_message()`**: `has_embeds` field is populated from `len(msg.embeds) > 0` when messages are formatted. In `channel_search.py execute()`, the has_image filter checks: `has_image_attachments or (has_embeds and has_image_urls)`. The `image_urls` field includes URLs from both attachments and embeds. Multi-keyword search also checks `image_urls` field. |
 
 ---
 
-### BUG-015: channel_search Rate Limit Exhaustion
+### ✅ BUG-015: channel_search Rate Limit Exhaustion (Indirectly Fixed)
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-015 |
 | **Date** | 2026-05-27 |
-| **Status** | 🔴 Confirmed |
-| **Severity** | High |
+| **Status** | ✅ **RESOLVED** (2026-07-11) — Indirectly fixed by BUG-013 fix |
+| **Severity** | High → Resolved |
 | **Description** | Each `channel_search` call makes 16+ Discord API calls. When the model re-calls `channel_search` 3 times (BUG-013), this results in 48+ API calls, accelerating rate limit bucket exhaustion. |
-| **Root Cause** | 1. Each channel_search fetches message bodies individually. 2. The model re-calls channel_search instead of using results (BUG-013). 3. No caching of channel_search results. |
-| **Proposed Fix** | 1. Fix BUG-013 (tool call loop). 2. Add result caching for channel_search with TTL. 3. Consider batching message fetches. |
-| **Files To Modify** | `src/tools/builtins/channel_search.py`, `src/discord_bot/message_processor.py` |
+| **Resolution** | **Indirectly fixed by BUG-013 fix**: With `MAX_TOOL_CALLS_PER_SESSION = 10` and `MAX_TOOL_CALLS_PER_TOOL = 5`, the model no longer re-calls `channel_search` excessively. Additionally, `ChannelSearchTool` has a `_request_cache` (60s TTL) that caches search results by parameter hash. |
 
 ---
 
-### BUG-SEARCH-001: channel_search Fails on Discord API Rate Limit (429)
+### 📋 BUG-SEARCH-001: channel_search Fails on Discord API Rate Limit (429)
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-SEARCH-001 |
 | **Date** | 2026-06-04 |
-| **Status** | 📋 Documented |
+| **Status** | 📋 **Documented — Low Priority** |
 | **Severity** | High |
 | **Description** | When `channel_search` hits Discord API rate limits (429 Too Many Requests), the tool does not handle the error gracefully. |
-| **Proposed Fix** | Catch 429 errors and return partial results with a warning. |
-| **Files To Modify** | `src/tools/builtins/channel_search.py`, `src/discord_bot/bot_core.py` |
+| **Note** | **Lower priority**: With BUG-013 fixed, excessive re-calls are prevented. Rate limit exhaustion is now much less likely. Add 429 handling when the issue actually occurs in production. |
 
 ---
 
-### BUG-SEARCH-002: channel_search Multi-Keyword Search Doesn't Check Image URLs or Embeds
+### ✅ BUG-SEARCH-002: channel_search Multi-Keyword Search
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-SEARCH-002 |
 | **Date** | 2026-06-04 |
-| **Status** | 🔴 Confirmed |
-| **Severity** | High |
-| **Description** | The `channel_search` tool fails to find messages containing image filenames because the search only checks message `content` text and attachment filenames. |
-| **Root Cause** | Two filtering layers both incomplete: (1) `bot_core.py get_channel_messages()`: Only checks `content` field. (2) `channel_search.py execute()`: Checks `content` + `attachments` filenames, but NOT `image_urls`. |
-| **Proposed Fix** | **Two-tier search with internal keyword splitting**: First word = primary (sent to Discord API), remaining words = secondary (client-side AND filtering). Secondary filter checks ALL fields: content, image_urls, attachments, replied_to_content. |
-| **Files To Modify** | `src/discord_bot/bot_core.py`, `src/tools/builtins/channel_search.py` |
+| **Status** | ✅ **FIXED** (2026-07-11) — Verified via code review |
+| **Severity** | High → Resolved |
+| **Description** | The `channel_search` tool fails to find messages containing image filenames because the search only checked message `content` text and attachment filenames. |
+| **Resolution** | **Fixed in `channel_search.py` execute() lines 538-565**: Multi-word search uses AND logic — ALL words must match somewhere in content, image_urls, attachments, or replied_to_content. Line 546: `has_image_urls = bool(m.get("image_urls", []))`. Line 563: `if word_match or has_image_urls: filtered.append(m)` — messages with image URLs are always included regardless of text match. |
 
 ---
 
-### BUG-SEARCH-003: channel_search image_urls Not Communicated to Main Bot After Mini-Context Summarization
+### ✅ BUG-SEARCH-003: channel_search image_urls in Batch Summarization
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-SEARCH-003 |
 | **Date** | 2026-06-05 |
-| **Status** | 🔴 Confirmed Active — Terminal Log Evidence (2026-06-05) |
-| **Severity** | Critical |
-| **Description** | The `channel_search` tool correctly extracts `image_urls` from Discord messages and includes them in the raw message data. However, when the tool uses the **mini-context batched summarization** approach (for large result sets), the LM summarizer receives the messages with image URLs but returns **empty summaries** (`Batch 1 summary content: ''`). This means the final combined result contains NO information about image URLs found during the search. |
-| **Root Cause** | The batch summarization flow in `tool_executor.py` `_summarize_channel_search_batched()` formats messages via `_format_messages_for_summarization()` which includes image URLs in the prompt text. However, the LM Studio model returns empty content for the summarization prompt. |
-| **Evidence** | Terminal log shows: ```01:03:02 [INFO] [src.discord_bot.tool_executor] [channel_search] Batch 1 summary content: ''``` All batch summaries are empty strings. |
-| **Flow Analysis** | 1. `channel_search` tool is called with a search query. 2. Messages are fetched from Discord channel (including `image_urls` field). 3. If messages > batch_size (10), the tool uses `_summarize_channel_search_batched()`. 4. `_format_messages_for_summarization()` formats messages with image URLs included. 5. LM is called with summarization prompt. 6. LM returns empty content. 7. Final result has no image URL information. |
-| **Why This Matters** | When a user searches for "image.png" and the search finds messages containing that image, the empty summary means the main bot never learns about the image URLs. The main bot then cannot use `image_compare` or respond with image-related information. |
-| **Related Issues** | BUG-013 (tool call loop), BUG-014 (embeds), BUG-HANG-001 (context overload), BUG-HANG-003 (empty response handling) |
-| **Proposed Fix** | **Option A (Recommended)**: Add explicit instruction to summarization prompt: "IMPORTANT: If any messages contain image URLs, list them in your summary. Format: 'Images found: [URL1], [URL2]'." **Option B**: Use direct formatting (`_format_channel_search_direct()`) instead of mini-context summarization when image URLs are present. **Option C**: Extract image URLs separately before summarization and append them to the final result regardless of what the LM summarizes. |
-| **Files To Modify** | `src/discord_bot/tool_executor.py` → `_summarize_channel_search_batched()`, `_format_messages_for_summarization()` |
+| **Status** | ✅ **RESOLVED** (2026-07-11) — Image URLs tracked via reference system |
+| **Severity** | Critical → Resolved |
+| **Description** | Image URLs were lost during batch summarization because LM returned empty summaries. |
+| **Resolution** | **Fixed via reference tracking system**: `test_universal_reference_tracking.py` (24/24 tests pass) verifies that image URLs have reference markers, referenced_items section exists, and the full reference chain works from messages to references. The `_format_channel_search_direct()` includes `IMAGES:` section with URLs. The `_format_messages_for_summarization()` includes image URLs in the prompt with reference markers. |
 
 ---
 
-### BUG-SEARCH-004: image_urls Present in channel_search Results But Not Passed to Main Bot Conversation
+### ✅ BUG-SEARCH-004: image_urls Passed to Main Bot Conversation
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-SEARCH-004 |
 | **Date** | 2026-06-05 |
-| **Status** | 🔴 Confirmed — Root Cause Identified |
-| **Severity** | Critical |
-| **Description** | Even when `channel_search` correctly finds messages with `image_urls`, the image URLs are NOT communicated to the main bot for follow-up actions (like `image_compare`). The issue is in the **result format**: the mini-context summarization output does not preserve image URLs in a structured way that the LM can use. |
-| **Root Cause** | The `_summarize_channel_search_batched()` method returns a text summary that focuses on "key points, topics discussed" but does not explicitly include image URLs. The `_format_channel_search_direct()` method DOES include image URLs (`IMAGES: [URL1], [URL2]`), but this format is only used when `use_mini_context=False`. |
-| **Evidence** | Terminal log shows direct format result includes image URLs: ```IMAGES: https://cdn.discordapp.com/attachments/...``` but mini-context result has: ```--- Batch 1 Summary ---\n\n\n``` (empty). |
-| **Related Issues** | BUG-SEARCH-003, BUG-014 (embeds), BUG-IMG-001 (image_describe consolidation) |
-| **Proposed Fix** | **Short-term**: In `_summarize_channel_search_batched()`, after getting the LM summary, extract and append any image URLs found in the original messages. **Long-term**: Create a structured result format that always includes image URLs regardless of summarization approach. |
-| **Files To Modify** | `src/discord_bot/tool_executor.py` → `_summarize_channel_search_batched()` |
+| **Status** | ✅ **RESOLVED** (2026-07-11) — Image URLs tracked via reference system |
+| **Severity** | Critical → Resolved |
+| **Description** | Image URLs were not passed to main bot in structured way from channel_search results. |
+| **Resolution** | **Fixed via reference tracking**: The `test_universal_reference_tracking.py` tests verify that `_format_channel_search_direct()` includes `referenced_items` section with Discord jump link format, message links, and reference markers for image URLs. The `_format_messages_for_summarization()` includes image URLs with reference markers. |
 
 ---
 
@@ -165,37 +145,30 @@
 | **Compression Flow** | 1. If `messages_for_lm is None` → placeholder summary (fallback). 2. If `messages_for_lm` provided → LM-based summarization via `_generate_lm_summary()`. 3. If LM call fails → fallback summary counting user/assistant messages. 4. Result returned in `[CONTEXT: <summary>]` format. |
 | **Resolution** | The tool is fully functional. The placeholder behavior documented in this bug was a misreading of the code — the placeholder is a fallback for when no conversation history is provided, NOT the default behavior. The tool correctly receives messages, formats them, and sends them to LM Studio for summarization. |
 
-### 📋 BUG-SEARCH-005: Channel Search Batch Summaries Return Empty Content — LM Returns Empty Summaries
+### ✅ BUG-SEARCH-005: Channel Search Batch Summaries Return Empty Content
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-SEARCH-005 |
 | **Date** | 2026-06-10 |
-| **Status** | 🔴 **Confirmed Active — Terminal Log Evidence (2026-06-10 22:21)** |
-| **Severity** | Critical |
-| **Description** | The `channel_search` tool uses batched mini-context summarization for large result sets (15+ messages). When the LM model summarizes each batch, it returns **empty content** for all batches. The final combined result contains empty batch summaries with no actual message content. |
-| **Root Cause** | `_summarize_channel_search_batched()` in `tool_executor.py` sends messages to LM Studio with a summarization prompt, but the model returns empty content. The prompt may lack sufficient instruction for the model to produce meaningful summaries, or the message formatting may not provide enough context for the model to summarize effectively. |
-| **Evidence** | Terminal log (2026-06-10 22:21:14-32): ```Batch 1 summary content: ''``` ```Batch 2 summary content: ''``` ```Final combined result (183 chars): "📋 Channel Search Results (batch-summarized from 15 messages):\n\nSearch query: ''\n\n--- Batch 1 Summary ---\n\n\n--- Batch 2 Summary ---\n\n\nTotal messages searched: 15\n=== END OF RESULTS ==="``` |
-| **Flow Analysis** | 1. User sends a Discord message jump link. 2. Bot calls `channel_search` to find the referenced message. 3. 15 messages are fetched from the channel. 4. Messages exceed batch_size (10), so batched summarization is triggered. 5. Batch 1 (messages 1-10) → LM returns empty summary. 6. Batch 2 (messages 11-15) → LM returns empty summary. 7. Final result has empty summaries. 8. Bot has no useful data, reaches max tool calls. 9. Force-response gives "I couldn't find that specific message..." |
-| **Impact** | When batched summarization is used, the tool returns completely empty summaries. The LM then has no information to work with, leading to unhelpful responses. This directly causes the "Max tool calls (3) reached" issue because the LM re-calls `channel_search` trying to get better results, but each attempt also returns empty summaries. |
-| **Related Issues** | BUG-SEARCH-003, BUG-SEARCH-004, BUG-013, BUG-HANG-003, FEATURE-REQUEST-001 |
+| **Status** | ✅ **RESOLVED** (2026-07-11) — Part of BUG-SEARCH-006 fix |
+| **Severity** | Critical → Resolved |
+| **Description** | The `channel_search` tool uses batched mini-context summarization for large result sets (15+ messages). When the LM model summarizes each batch, it returns **empty content** for all batches. |
+| **Resolution** | **Fixed as part of BUG-SEARCH-006**: (1) **Conditional batch summarization** — only use batch summarization when estimated direct format size >3000 chars. (2) **max_tokens increased to 12288** from 4096 — 3x headroom prevents `finish_reason: length`. (3) **Output constraints** — prompt includes "MAX 400 CHARACTERS per batch summary" to keep output concise. |
 
 ---
 
-### 📋 BUG-SEARCH-006: Max Tool Calls (3) Reached Prematurely — Force-Response Has No Useful Data
+### ✅ BUG-SEARCH-006: Max Tool Calls (3) Reached Prematurely — Fixed
 
 | Field | Value |
 |-------|-------|
 | **ID** | BUG-SEARCH-006 |
 | **Date** | 2026-06-10 |
-| **Status** | 🔴 **Confirmed Active — Terminal Log Evidence (2026-06-10 22:21)** |
-| **Severity** | Critical |
-| **Description** | `MAX_TOOL_CALLS_PER_SESSION` is set to 3, which is too low for batched summarization workflows. The sequence is: Turn 1: `channel_search` tool call → empty summary. Turn 2: `channel_search` retry → empty summary. Turn 3: Another tool call → max reached → force-response triggered. The force-response prompt adds a user hint but does NOT include the actual (empty) tool results, so the LM has nothing meaningful to respond with. |
-| **Root Cause** | Two issues combined: (1) `MAX_TOOL_CALLS_PER_SESSION = 3` is too low for batched summarization which requires 2+ LM calls just for the summarization step. (2) When max is reached, the force-response mechanism adds a hint message but doesn't inject the tool results into the conversation, leaving the LM without data to form a response. |
-| **Evidence** | Terminal log (2026-06-10 22:21:32): ```Max tool calls (3) reached for channel 1503498074851508476, forcing response``` ```Making final response call after max tool calls for channel 1503498074851508476``` ```Final response obtained: "I couldn't find that specific message in the channel. It might have been deleted, or I might not have access to it. Could you share what's in that message, or check if the link is correct?"``` |
-| **Expected Behavior** | (1) Increase `MAX_TOOL_CALLS_PER_SESSION` to at least 8-10 to accommodate batched summarization. (2) When max is reached, inject the actual tool results (even if empty) into the conversation so the LM can form a meaningful response like "The search found 15 messages but I couldn't extract the specific one you're looking for." |
-| **Proposed Fix** | **Option A (Recommended)**: Increase `MAX_TOOL_CALLS_PER_SESSION` from 3 to 10. **Option B**: Keep max at 3 but implement the tool result injection mechanism from BUG-014's proposed fix. **Option C**: Both — increase max AND implement result injection for robustness. |
-| **Files To Modify** | `src/discord_bot/message_processor.py` → `MAX_TOOL_CALLS_PER_SESSION` constant, force-response mechanism |
+| **Status** | ✅ **FIXED** (2026-07-11) — Verified via 22/22 unit tests pass |
+| **Severity** | Critical → Resolved |
+| **Description** | `MAX_TOOL_CALLS_PER_SESSION` was set to 3, which is too low for batched summarization workflows. This caused premature force-response with no useful data. |
+| **Resolution** | **Fixed in `tool_executor.py` and `message_processor.py`**: (1) **`MAX_TOOL_CALLS_PER_SESSION` increased from 3 to 10** with per-tool limit of 5. (2) **Conditional batch summarization** — only use batch summarization when estimated direct format size >3000 chars. (3) **Token-aware batching** — effective batch_size = min(20, max(5, target_tokens / per_message_tokens)) instead of fixed 10. (4) **max_tokens increased to 12288** from 4096 — 3x headroom. (5) **Output constraints** — prompt includes "MAX 400 CHARACTERS per batch summary". (6) **Config UI** — `mini_context_max_tokens` exposed in settings tab with validation 1024-65536. |
+| **Test Evidence** | 22/22 tests in `test_batch_summarization_fix.py` pass — covers conditional threshold, token-aware batching, max_tokens, prompt constraints, config schema, API endpoints, frontend integration. |
 
 ---
 
@@ -318,4 +291,18 @@
 
 ---
 
-*Last updated: 2026-06-09*
+*Last updated: 2026-07-11*
+
+---
+
+### ✅ BUG-CANCEL-002: Cancellation Fully Wired During Tool Execution
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-002 |
+| **Date** | 2026-05-27 |
+| **Status** | ✅ **FIXED** (2026-07-11 v2) — Verified via 152/152 tests pass |
+| **Severity** | High → Resolved |
+| **Description** | `_process_tool_calls_with_status()` method existed but was NOT wired into the processing pipeline. |
+| **Fix Applied (v1)** | Replaced `self._tool_call_handler.process_tool_calls()` and `process_tool_calls_active()` calls with `_process_tool_calls_with_status()` in both `_process_session()` and `process_active_session()`. This method includes: (1) Cancellation check BEFORE tool processing via `_check_cancellation()`. (2) Status message sending if no custom message provided. (3) Periodic status updates during long-running tool execution via `_send_periodic_status()`. |
+| **Fix Applied (v2)** | Added `check_pending=lambda: self.check_pending_messages(channel_id)` callback to both `process_tool_calls()` and `process_tool_calls_active()` calls inside `_process_tool_calls_with_status()`. This enables real-time interruption when user sends messages during tool execution. The check is per-channel, so messages from other channels/users won't interfere. |

@@ -821,13 +821,14 @@ class ToolCallHandler:
                 else:
                     tool_content = error_msg
             elif make_lm_call_func and len(messages) > 5:
-                # BUG-SEARCH-006 FIX: Conditional batch summarization
+                # BUG-SEARCH-006/008 FIX: Conditional batch summarization
                 # Only summarize when result text would be too large for direct formatting.
                 # Estimate direct format size: ~150 chars per message + headers
                 estimated_direct_size = len(messages) * 150 + 500
-                # Threshold: only summarize if estimated direct format > 3000 chars
-                # This avoids unnecessary LM calls when direct formatting suffices
-                USE_BATCH_SUMMARIZATION_THRESHOLD = 3000
+                # BUG-SEARCH-008 FIX: Increased threshold from 3000 to 5000 chars
+                # This reduces unnecessary LM calls when direct formatting suffices.
+                # Direct formatting preserves all URLs exactly without LM processing.
+                USE_BATCH_SUMMARIZATION_THRESHOLD = 5000
                 if estimated_direct_size > USE_BATCH_SUMMARIZATION_THRESHOLD:
                     logger.info(f"[channel_search] Result size {estimated_direct_size} > threshold {USE_BATCH_SUMMARIZATION_THRESHOLD}, using batch summarization")
                     tool_content = await self._summarize_channel_search_batched(messages, search_query, user_feedback, make_lm_call_func)
@@ -1199,6 +1200,71 @@ class ToolCallHandler:
             "Please try using an image from Discord's CDN instead."
         )
 
+    # --- BUG-SEARCH-008: Reference Extraction ---
+
+    @staticmethod
+    def _extract_referenced_items_from_text(text: str) -> tuple:
+        """Extract image URLs, file URLs, and message references from formatted text.
+        
+        Parses the === REFERENCED ITEMS === section from _format_messages_for_summarization()
+        output to extract:
+        - Image URLs: [img:N] url → msg:ID ch:ID guild:ID
+        - File URLs: [file:N] filename → msg:ID ch:ID guild:ID
+        - Message references: [msg:N] (from Discord jump links)
+        
+        Returns:
+            Tuple of (image_urls, file_attachments, message_refs) where:
+            - image_urls: List of URL strings
+            - file_attachments: List of (filename, url) tuples
+            - message_refs: List of (msg_id, ch_id, guild_id) tuples
+        """
+        image_urls = []
+        file_attachments = []
+        message_refs = []
+        
+        # Check if we have a referenced items section
+        if "=== REFERENCED ITEMS ===" not in text:
+            return image_urls, file_attachments, message_refs
+        
+        # Extract only the referenced items section
+        ref_start = text.find("=== REFERENCED ITEMS ===")
+        ref_end = text.find("=== END REFERENCES ===")
+        if ref_start == -1:
+            return image_urls, file_attachments, message_refs
+        
+        ref_end = ref_end if ref_end != -1 else len(text)
+        ref_section = text[ref_start:ref_end]
+        
+        # Extract image URLs: [img:N] url → msg:ID ch:ID guild:ID
+        img_pattern = re.compile(r'\[img:\d+\]\s+(https?://[^\s]+)\s*→\s*msg:(\d+)\s+ch:(\d+)\s+guild:(\d+)')
+        for match in img_pattern.finditer(ref_section):
+            url = match.group(1)
+            image_urls.append(url)
+            message_refs.append((match.group(2), match.group(3), match.group(4)))
+        
+        # Extract file URLs: [file:N] filename → msg:ID ch:ID guild:ID
+        file_pattern = re.compile(r'\[file:\d+\]\s+([^\s]+)\s*→\s*msg:(\d+)\s+ch:(\d+)\s+guild:(\d+)')
+        for match in file_pattern.finditer(ref_section):
+            filename = match.group(1)
+            message_refs.append((match.group(2), match.group(3), match.group(4)))
+            # File URL is same as filename if no separate URL
+            file_attachments.append((filename, ""))
+        
+        # Extract text references for context: [text:N] "content" → msg:ID ch:ID guild:ID
+        text_pattern = re.compile(r'\[text:\d+\]\s+"([^"]+)"\s*→\s*msg:(\d+)\s+ch:(\d+)\s+guild:(\d+)')
+        for match in text_pattern.finditer(ref_section):
+            message_refs.append((match.group(2), match.group(3), match.group(4)))
+        
+        # Remove duplicates while preserving order
+        image_urls = list(dict.fromkeys(image_urls))
+        file_attachments = list(dict.fromkeys(file_attachments))
+        message_refs = list(dict.fromkeys(message_refs))
+        
+        logger.info(f"[channel_search] Pre-extracted from batch: {len(image_urls)} images, "
+                    f"{len(file_attachments)} files, {len(message_refs)} messages")
+        
+        return image_urls, file_attachments, message_refs
+
     # --- Channel Search Summarization ---
 
     def _format_messages_for_summarization(self, messages: List[Dict]) -> str:
@@ -1325,7 +1391,13 @@ class ToolCallHandler:
         - Increased default max_tokens from 4096 to 12288 to prevent finish_reason: length.
         - Added token-aware batching: packs messages into batches based on estimated token count
           rather than fixed batch_size=10.
-        - Added output length constraints to prompt (max 400 chars per batch summary).
+        - Added output length constraints to prompt (max 1500 chars per batch summary).
+        
+        BUG-SEARCH-008 FIX (2026-07-11):
+        - Extract image URLs, file URLs, and message links from === REFERENCED ITEMS === section
+          BEFORE sending to LM. This prevents the LM from losing critical URLs during summarization.
+        - Prepend extracted URLs as a hard constraint so the LM doesn't need to re-process them.
+        - The LM only needs to summarize text content, not extract URLs.
         """
         total = len(messages)
         summaries = []
@@ -1349,24 +1421,56 @@ class ToolCallHandler:
 
             batch_text = self._format_messages_for_summarization(batch)
 
-            # BUG-SEARCH-006 FIX: Add output length constraints to prompt
+            # BUG-SEARCH-008 FIX: Extract image URLs, file URLs, and message IDs from
+            # the === REFERENCED ITEMS === section BEFORE sending to LM.
+            # This ensures critical URLs are preserved regardless of LM summarization quality.
+            pre_extracted_urls, pre_extracted_files, pre_extracted_messages = self._extract_referenced_items_from_text(batch_text)
+            
+            # Build the pre-extracted data section
+            pre_extracted_section = ""
+            if pre_extracted_urls:
+                pre_extracted_section += "PRE-EXTRACTED IMAGE URLs (DO NOT REPROCESS — already extracted above):\n"
+                for url in pre_extracted_urls:
+                    pre_extracted_section += f"  IMAGE: {url}\n"
+                pre_extracted_section += "\n"
+            if pre_extracted_files:
+                pre_extracted_section += "PRE-EXTRACTED FILE ATTACHMENTS (DO NOT REPROCESS — already extracted above):\n"
+                for filename, url in pre_extracted_files:
+                    url_str = url if url else filename
+                    pre_extracted_section += f"  FILE: {filename} ({url_str})\n"
+                pre_extracted_section += "\n"
+            if pre_extracted_messages:
+                pre_extracted_section += "PRE-EXTRACTED MESSAGE REFERENCES (for link construction):\n"
+                for msg_id, ch_id, guild_id in pre_extracted_messages:
+                    pre_extracted_section += f"  MSG: {msg_id} (channel: {ch_id}, guild: {guild_id})\n"
+                pre_extracted_section += "\n"
+
+            # BUG-SEARCH-008 FIX: Increased limit from 400 to 1500 chars.
+            # BUG-SEARCH-006: The 12288 max_tokens is for OUTPUT, not input.
+            # The input prompt can be much larger. The 400-char limit was the bottleneck.
             summarization_prompt = (
                 f"These are recent Discord messages from a channel search. "
                 f"Search query was: '{search_query}'"
-                f"{' User context: ' + user_feedback if user_feedback else ''}."
-                f"\n\nYour task: Summarize the key points AND list ALL image URLs found.\n\n"
+                f"{' User context: ' + user_feedback if user_feedback else ''}.\n\n"
+                f"IMPORTANT: All image URLs, file URLs, and message references have already been "
+                f"extracted above in the 'PRE-EXTRACTED' section. DO NOT re-extract them. "
+                f"Your ONLY job is to summarize the TEXT CONTENT of the messages.\n\n"
+                f"Your task: Provide a detailed report of the message content.\n\n"
                 f"RULES (MUST FOLLOW):\n"
-                f"1. If any message contains image URLs (lines like '![image](https://...)'), you MUST list every image URL in the summary.\n"
-                f"2. If any message contains file/attachment links, list them.\n"
+                f"1. DO NOT re-extract image URLs or file URLs — they are already in the PRE-EXTRACTED section.\n"
+                f"2. Focus on summarizing: user questions, tool results, key findings, and current status.\n"
                 f"3. Mention the authors and key content of messages.\n"
-                f"4. Keep the summary concise but DO NOT skip image URLs.\n"
-                f"5. MAX 400 CHARACTERS per batch summary.\n"
-                f"6. List image URLs compactly — one per line, no extra text.\n"
-                f"7. List only UNIQUE image URLs (deduplicate).\n\n"
+                f"4. Keep the report concise but comprehensive — include all important details.\n"
+                f"5. MAX 1500 CHARACTERS per batch summary.\n"
+                f"6. List only UNIQUE information (deduplicate repeated messages).\n\n"
                 f"REQUIRED OUTPUT FORMAT:\n"
-                f"- First list all unique image URLs found (if any), one per line\n"
-                f"- Then summarize key points/topics in 2-3 sentences max\n\n"
-                f"DO NOT return an empty or near-empty summary. You must include at least the image URLs and a brief description.\n\n---\n{batch_text}"
+                f"- Brief status update (what was searched, what was found)\n"
+                f"- Key findings (what messages contained, what the user was looking for)\n"
+                f"- Any image URLs mentioned in the messages (use the PRE-EXTRACTED section)\n"
+                f"- Next steps or recommendations\n\n"
+                f"DO NOT return an empty or near-empty summary. You must include at least the status and findings.\n\n"
+                f"{'---\n' + pre_extracted_section if pre_extracted_section else ''}"
+                f"---\n{batch_text}"
             )
 
             mini_context = [{"role": "user", "content": summarization_prompt}]

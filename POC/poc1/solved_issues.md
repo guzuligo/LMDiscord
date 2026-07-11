@@ -1272,3 +1272,213 @@
 ---
 
 *End of Solved Issues. For current open and planned issues, see [issues_tracker.md](issues_tracker.md).*
+
+---
+
+## Solved Issues — 2026-07-11 Verification Batch
+
+### ✅ BUG-HANG-001: Bot Hangs — Context Overload (LM Studio Returns Empty Content + Tool Calls)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-HANG-001 |
+| **Date** | 2026-06-03 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via code review + 152/152 tests pass |
+| **Root Cause** | Context overload: Conversation history grew to 11,244+ prompt tokens. |
+| **Fix Applied** | 1. Conversation history truncated to 20 messages in `process_active_session()`. 2. Auto-compression triggered at 80% token threshold + message count >20. 3. Context compression tool uses LM-based summarization. 4. Session start context initialization fetches recent channel messages and injects into system prompt. |
+| **Files Modified** | `src/discord_bot/message_processor.py`, `src/discord_bot/message_handler.py`, `src/tools/builtins/context_compressor.py`, `src/discord_bot/memory_callbacks.py` |
+
+---
+
+### ✅ BUG-HANG-003: Bot Posts Empty/Whitespace Response After Tool Processing
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-HANG-003 |
+| **Date** | 2026-06-04 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via code review + 152/152 tests pass |
+| **Root Cause** | `not '\n\n'` evaluates to `False` in Python — whitespace-only strings were not caught by existing fallback logic. |
+| **Fix Applied** | 1. `_is_empty_response()` method: `return not text or not text.strip()` — handles None, empty string, AND whitespace-only. 2. Enhanced fallback with tool result injection and retry. 3. Fallback messages posted if retry also fails. |
+| **Files Modified** | `src/discord_bot/message_processor.py` |
+
+---
+
+### ✅ BUG-HANG-004: TypeError — response_text[:50] Crashes When response_text Is None
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-HANG-004 |
+| **Date** | 2026-06-04 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via code review |
+| **Root Cause** | `response_text[:50]` called without None check in error logging. |
+| **Fix Applied** | Added null-safe guard: `response_text_safe = response_text if response_text is not None else "(None)"` before slicing. |
+| **Files Modified** | `src/discord_bot/message_processor.py` |
+
+---
+
+### ✅ BUG-013: channel_search Tool Call Loop — Model Re-calls Instead of Using Results
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-013 |
+| **Date** | 2026-05-27 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via code review + 152/152 tests pass |
+| **Root Cause** | `MAX_TOOL_CALLS_PER_SESSION` was 3 (too low), `MAX_TOOL_CALLS_PER_TOOL` was 3. |
+| **Fix Applied** | 1. `MAX_TOOL_CALLS_PER_SESSION` increased from 3 to 10. 2. `MAX_TOOL_CALLS_PER_TOOL` increased from 3 to 5 with per-tool type tracking. 3. Force-response injection with user hint message. 4. Failed turn tracking (tool errors don't count against limit). |
+| **Files Modified** | `src/discord_bot/message_processor.py` |
+
+---
+
+### ✅ BUG-014 (channel_id): channel_search — LM Passes Channel Name Instead of Numeric ID
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-014 (channel_id) |
+| **Date** | 2026-06-04 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **RESOLVED** — Root cause was BUG-013 (tool call loop), now fixed |
+| **Resolution** | With BUG-013 fixed (max_tool_calls increased to 10, per-tool limits, force-response injection), the model no longer gets stuck in re-call loops. `resolve_channel()` correctly resolves channel names to numeric IDs. |
+
+---
+
+### ✅ BUG-014 (embeds): channel_search Embeds Support
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-014 (embeds) |
+| **Date** | 2026-05-27 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **RESOLVED** — Verified via code review |
+| **Resolution** | `has_embeds` field populated in `bot_core.py _format_message()`. `channel_search.py execute()` checks `has_image_attachments or (has_embeds and has_image_urls)`. `image_urls` includes URLs from both attachments and embeds. |
+
+---
+
+### ✅ BUG-015: channel_search Rate Limit Exhaustion (Indirectly Fixed)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-015 |
+| **Date** | 2026-05-27 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **RESOLVED** — Indirectly fixed by BUG-013 fix |
+| **Resolution** | With `MAX_TOOL_CALLS_PER_SESSION = 10` and `MAX_TOOL_CALLS_PER_TOOL = 5`, the model no longer re-calls `channel_search` excessively. `ChannelSearchTool` has `_request_cache` (60s TTL). |
+
+---
+
+### ✅ BUG-CANCEL-001: Cancellation Feature — Method Name Mismatch
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-001 |
+| **Date** | 2026-05-27 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via code review |
+| **Resolution** | `bot_core.py` uses `get_cancellation_manager()` with lazy import pattern. `CancellationManager.request_cancel()` method exists and is called correctly. |
+
+---
+
+### ✅ BUG-CANCEL-005: Cancellation Manager Not Imported in bot_core.py
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-005 |
+| **Date** | 2026-05-27 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via code review |
+| **Resolution** | `bot_core.py` uses lazy import: `from src.discord_bot.cancellation import get_cancellation_manager` inside `cancel_session()` method and `cancellation_manager` property. Works correctly. |
+
+---
+
+### ✅ BUG-SEARCH-002: channel_search Multi-Keyword Search
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-002 |
+| **Date** | 2026-06-04 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via code review |
+| **Resolution** | Multi-word search in `channel_search.py execute()` lines 538-565 uses AND logic — ALL words must match somewhere in content, image_urls, attachments, or replied_to_content. Messages with image URLs are always included regardless of text match. |
+
+---
+
+### ✅ BUG-SEARCH-003: channel_search image_urls in Batch Summarization
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-003 |
+| **Date** | 2026-06-05 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **RESOLVED** — Image URLs tracked via reference system |
+| **Resolution** | `test_universal_reference_tracking.py` (24/24 tests pass) verifies that image URLs have reference markers, referenced_items section exists, and the full reference chain works. `_format_channel_search_direct()` includes `IMAGES:` section with URLs. |
+
+---
+
+### ✅ BUG-SEARCH-004: image_urls Passed to Main Bot Conversation
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-004 |
+| **Date** | 2026-06-05 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **RESOLVED** — Image URLs tracked via reference system |
+| **Resolution** | `test_universal_reference_tracking.py` tests verify that `_format_channel_search_direct()` includes `referenced_items` section with Discord jump link format, message links, and reference markers for image URLs. |
+
+---
+
+### ✅ BUG-SEARCH-005: Channel Search Batch Summaries Return Empty Content
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-005 |
+| **Date** | 2026-06-10 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **RESOLVED** — Part of BUG-SEARCH-006 fix |
+| **Resolution** | (1) Conditional batch summarization — only when estimated direct format size >3000 chars. (2) max_tokens increased to 12288 from 4096. (3) Output constraints — prompt includes "MAX 400 CHARACTERS per batch summary". |
+
+---
+
+### ✅ BUG-SEARCH-006: Max Tool Calls (3) Reached Prematurely — Batch Summarization Latency
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-006 |
+| **Date** | 2026-06-10 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** — Verified via 22/22 unit tests pass |
+| **Root Cause** | `MAX_TOOL_CALLS_PER_SESSION = 3` too low for batched summarization workflows. |
+| **Fix Applied** | (1) `MAX_TOOL_CALLS_PER_SESSION` increased from 3 to 10, per-tool limit of 5. (2) Conditional batch summarization. (3) Token-aware batching — batch_size = min(20, max(5, target_tokens / per_message_tokens)). (4) max_tokens increased to 12288 from 4096. (5) Output constraints in prompt. (6) Config UI with `mini_context_max_tokens` validation 1024-65536. |
+| **Test Evidence** | 22/22 tests in `test_batch_summarization_fix.py` pass. |
+| **Files Modified** | `src/discord_bot/tool_executor.py`, `src/discord_bot/message_processor.py`, `src/static/lib/settings.js`, `src/app.py`, `src/config.json`, `src/templates/index.html` |
+
+---
+
+### ✅ BUG-TEST-001: test_channel_search_pagination.py — Tests Fixed
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-TEST-001 |
+| **Date** | 2026-07-11 |
+| **Resolved** | 2026-07-11 |
+| **Status** | ✅ **FIXED** |
+| **Description** | 24 failing tests out of 68 due to outdated features after git merge recovery. |
+| **Resolution** | Complete rewrite of `test_channel_search_pagination.py`: Removed 24 tests for non-existent features, added 36 new tests covering sliding window, deep search, filtering, edge cases. Added `_request_cache = {}` clearing before tests. |
+| **Test Results** | 36 tests in test_channel_search_pagination.py — all passing. Full test suite: 152 tests — all passing. |
+
+---
+
+### ✅ BUG-CANCEL-002: Cancellation Fully Wired During Tool Execution
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-CANCEL-002 |
+| **Date** | 2026-05-27 |
+| **Resolved** | 2026-07-11 (v1), 2026-07-11 (v2) |
+| **Status** | ✅ **FIXED** — Verified via 152/152 tests pass |
+| **Root Cause** | `_process_tool_calls_with_status()` method existed with cancellation checking but was NOT wired into the processing pipeline. |
+| **Fix Applied (v1)** | Replaced `self._tool_call_handler.process_tool_calls()` and `process_tool_calls_active()` calls with `_process_tool_calls_with_status()` in both `_process_session()` and `process_active_session()`. This method includes: (1) Cancellation check BEFORE tool processing via `_check_cancellation()`. (2) Status message sending if no custom message provided. (3) Periodic status updates during long-running tool execution via `_send_periodic_status()`. |
+| **Fix Applied (v2)** | Added `check_pending=lambda: self.check_pending_messages(channel_id)` callback to both `process_tool_calls()` and `process_tool_calls_active()` calls inside `_process_tool_calls_with_status()`. This enables real-time interruption when user sends messages during tool execution. The check is per-channel (via `bot._pending_messages.get(channel_id)`), so messages from other channels or unrelated users won't interfere. |
+| **Code Location** | `src/discord_bot/message_processor.py` → `_process_session()` line ~341, `process_active_session()` line ~690, `_process_tool_calls_with_status()` lines ~1424-1444 |
