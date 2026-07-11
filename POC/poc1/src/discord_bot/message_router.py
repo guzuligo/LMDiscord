@@ -17,13 +17,12 @@ from typing import Dict, List, Any, Optional, Tuple
 
 import discord
 
-logger = logging.getLogger(__name__)
-
-# Regex pattern to extract channel_id and message_id from Discord CDN attachment URLs
-# Pattern: https://cdn.discordapp.com/attachments/{channel_id}/{message_id}/{filename}?...
-CDN_ATTACHMENT_PATTERN = re.compile(
-    r'cdn\.discordapp\.com/attachments/(\d+)/(\d+)/'
+from src.discord_bot.cdn_url_refresher import (
+    refresh_cdn_url,
+    refresh_image_attachments,
 )
+
+logger = logging.getLogger(__name__)
 
 # Regex pattern to extract Discord message jump links from message content
 # Supports both discord.com and discordapp.com domains
@@ -75,44 +74,6 @@ def _extract_message_ids_from_link(link: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def _is_expired_cdn_url(url: str) -> bool:
-    """Check if a CDN URL contains expired expiration parameters.
-
-    Discord attachment URLs contain time-limited tokens like ?ex=6a167da7&is=6a152c27&hm=...
-    These tokens expire and the underlying images may be removed from CDN entirely.
-
-    Args:
-        url: The CDN URL to check
-
-    Returns:
-        True if the URL appears to contain expired expiration parameters
-    """
-    if not url or not isinstance(url, str):
-        return False
-    # Check for expiration-related query parameters
-    return '?ex=' in url or '?is=' in url
-
-
-def _extract_channel_message_from_url(url: str) -> Optional[Tuple[str, str]]:
-    """Extract (channel_id, message_id) from a Discord CDN attachment URL.
-
-    Discord attachment URLs follow the pattern:
-    https://cdn.discordapp.com/attachments/{channel_id}/{message_id}/{filename}
-
-    Args:
-        url: The CDN URL to parse
-
-    Returns:
-        Tuple of (channel_id, message_id) or None if extraction fails
-    """
-    if not url or not isinstance(url, str):
-        return None
-    match = CDN_ATTACHMENT_PATTERN.search(url)
-    if match:
-        return match.group(1), match.group(2)
-    return None
-
-
 class MessageRouter:
     """Routes incoming Discord messages to appropriate handlers."""
 
@@ -151,96 +112,11 @@ class MessageRouter:
         self._lm_studio_lock = lm_studio_lock
         self._config = config
 
-    async def _fetch_fresh_image_url(self, cdn_url: str) -> Optional[str]:
-        """Fetch a fresh image URL from Discord API when the cached CDN URL has expired.
-
-        When Discord attachment URLs expire (contain ?ex=, ?is= tokens), the underlying
-        images may be removed from CDN entirely. This method fetches fresh proxy URLs
-        by calling the Discord API to retrieve the message object.
-
-        Discord attachment URLs follow the pattern:
-        https://cdn.discordapp.com/attachments/{channel_id}/{message_id}/{filename}
-
-        Strategy:
-        1. Extract channel_id and message_id from the CDN URL
-        2. Use client.get_channel(id) for fast cache-based lookup
-        3. Fallback to guild iteration if channel not in cache
-        4. Fetch the message via Discord API — returns fresh attachment URLs
-
-        Args:
-            cdn_url: The expired CDN URL
-
-        Returns:
-            Fresh proxy URL from Discord API, or None if fetch fails.
-        """
-        # Extract channel_id and message_id from the URL
-        extracted = _extract_channel_message_from_url(cdn_url)
-        if not extracted:
-            logger.debug(f"Cannot extract channel/message IDs from CDN URL: {cdn_url[:80]}...")
-            return None
-
-        channel_id_str, message_id_str = extracted
-        channel_id = int(channel_id_str)
-        message_id = int(message_id_str)
-
-        try:
-            # Strategy 1: Direct cache lookup via client.get_channel() (fastest)
-            channel = self._bot.client.get_channel(channel_id)
-
-            # Strategy 2: Fallback — iterate guilds if channel not in cache
-            if channel is None:
-                for guild in self._bot.client.guilds:
-                    if guild is None:
-                        continue
-                    channel = guild.get_channel(channel_id) or guild.get_text_channel(channel_id)
-                    if channel:
-                        break
-
-            if channel is None:
-                logger.debug(f"Channel {channel_id} not accessible (not in cache or guild iteration), skipping fresh URL fetch")
-                return None
-
-            if not hasattr(channel, 'fetch_message'):
-                logger.debug(f"Channel {channel_id} does not support fetch_message")
-                return None
-
-            # Fetch the message via Discord API — returns fresh attachment URLs
-            message = await channel.fetch_message(message_id)
-            if message and hasattr(message, 'attachments') and message.attachments:
-                # Try to match by filename first
-                url_parts = cdn_url.split('/')
-                original_filename = url_parts[-1].split('?')[0] if url_parts else ""
-
-                for attachment in message.attachments:
-                    if hasattr(attachment, 'filename') and attachment.filename:
-                        if attachment.filename == original_filename:
-                            fresh_url = attachment.url
-                            logger.info(f"Fresh CDN URL obtained for {original_filename}")
-                            return fresh_url
-
-                # If no filename match, return the first attachment URL
-                fresh_url = message.attachments[0].url
-                logger.info(f"Fresh CDN URL obtained (first attachment) for message {message_id}")
-                return fresh_url
-
-            logger.debug(f"No attachments found in message {message_id}")
-            return None
-
-        except discord.NotFound:
-            logger.warning(f"Message {message_id} not found in channel {channel_id}")
-            return None
-        except discord.Forbidden:
-            logger.warning(f"No permission to fetch message {message_id} in channel {channel_id}")
-            return None
-        except Exception as e:
-            logger.warning(f"Error fetching fresh URL for message {message_id}: {e}")
-            return None
-
     async def _refresh_expired_image_urls(self, image_attachments: List[Dict]) -> List[Dict]:
-        """Refresh expired image URLs in an attachment list via Discord API.
+        """Refresh image URLs in an attachment list via Discord API.
 
-        For each image attachment that contains expired CDN parameters,
-        attempt to fetch a fresh URL from the Discord API.
+        Always attempts to fetch fresh URLs from the Discord API since
+        CDN URLs expire very quickly.
 
         Args:
             image_attachments: List of image attachment dicts with 'url' key
@@ -251,27 +127,7 @@ class MessageRouter:
         if not image_attachments:
             return image_attachments
 
-        refreshed = []
-        for att in image_attachments:
-            url = att.get("url", "")
-            if _is_expired_cdn_url(url):
-                logger.info(f"Detected expired CDN URL, fetching fresh URL: {url[:80]}...")
-                fresh_url = await self._fetch_fresh_image_url(url)
-                if fresh_url:
-                    logger.info(f"URL refreshed: {url[:60]}... -> {fresh_url[:60]}...")
-                    refreshed.append({
-                        "url": fresh_url,
-                        "filename": att.get("filename", "unknown"),
-                        "is_image": True
-                    })
-                else:
-                    # Keep original URL as fallback - it may still work
-                    logger.warning(f"Could not refresh URL, keeping original: {url[:60]}...")
-                    refreshed.append(att)
-            else:
-                refreshed.append(att)
-
-        return refreshed
+        return await refresh_image_attachments(self._bot, image_attachments)
 
     def get_display_name_for_user(
         self,
@@ -662,10 +518,8 @@ class MessageRouter:
                     logger.info(f"Reply context extracted: {reply_context[:80]}...")
 
                     # Extract image attachments from the referenced message
-                    referenced_images = await self._extract_images_from_message(referenced_msg)
+                    referenced_images = await self.extract_image_attachments(referenced_msg)
                     if referenced_images:
-                        # Refresh any expired CDN URLs in referenced message images
-                        referenced_images = await self._refresh_expired_image_urls(referenced_images)
                         referenced_image_attachments = referenced_images
                         logger.info(f"Extracted {len(referenced_images)} image(s) from referenced message")
             except discord.NotFound:

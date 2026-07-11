@@ -648,6 +648,10 @@ async function loadToolsConfig() {
 
             const contextLmMaxTokens = document.getElementById('contextLmMaxTokens');
             if (contextLmMaxTokens) contextLmMaxTokens.value = cfg.context_lm_max_tokens;
+
+            // BUG-SEARCH-006 FIX: Mini-Context Max Tokens
+            const miniContextMaxTokens = document.getElementById('miniContextMaxTokens');
+            if (miniContextMaxTokens) miniContextMaxTokens.value = cfg.mini_context_max_tokens ?? 12288;
             
             updateToolsConfigStatusText('Loaded');
         }
@@ -670,7 +674,9 @@ async function saveToolsConfig() {
         context_message_threshold: parseInt(document.getElementById('contextMessageThreshold').value),
         context_messages_to_keep_fresh: parseInt(document.getElementById('contextMessagesToKeepFresh').value),
         context_summary_length: parseInt(document.getElementById('contextSummaryLength').value),
-        context_lm_max_tokens: parseInt(document.getElementById('contextLmMaxTokens').value)
+        context_lm_max_tokens: parseInt(document.getElementById('contextLmMaxTokens').value),
+        // BUG-SEARCH-006 FIX: Mini-Context Max Tokens
+        mini_context_max_tokens: parseInt(document.getElementById('miniContextMaxTokens').value)
     };
     
     try {
@@ -699,13 +705,13 @@ async function resetToolsConfig() {
     if (reasoningBrevity) reasoningBrevity.checked = true;
     
     const toolMaxTokens = document.getElementById('toolMaxTokens');
-    if (toolMaxTokens) toolMaxTokens.value = 2048;
+    if (toolMaxTokens) toolMaxTokens.value = 12288;
     
     const toolTemperature = document.getElementById('toolTemperature');
     if (toolTemperature) toolTemperature.value = 0.3;
     
     const finalMaxTokens = document.getElementById('finalMaxTokens');
-    if (finalMaxTokens) finalMaxTokens.value = 8192;
+    if (finalMaxTokens) finalMaxTokens.value = 12288;
     
     const useToolCalling = document.getElementById('toolsUseToolCalling');
     if (useToolCalling) useToolCalling.checked = true;
@@ -731,7 +737,7 @@ async function resetToolsConfig() {
     if (contextSummaryLength) contextSummaryLength.value = 300;
 
     const contextLmMaxTokens = document.getElementById('contextLmMaxTokens');
-    if (contextLmMaxTokens) contextLmMaxTokens.value = 4096;
+    if (contextLmMaxTokens) contextLmMaxTokens.value = 8192;
     
     updateToolsConfigStatusText('Reset to defaults - click Save to apply');
 }

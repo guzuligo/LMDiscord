@@ -989,6 +989,22 @@
 
 ---
 
+### CDN-001: Image Download Fails on Expired Discord CDN URLs
+
+| Field | Value |
+|-------|-------|
+| **ID** | CDN-001 |
+| **Date** | 2026-07-10 |
+| **Status** | ✅ Solved |
+| **Severity** | High |
+| **Description** | When the LM calls `image_compare` with Discord CDN image URLs from message history, the image download fails with "Failed to download images. At least 1 image is required for analysis." This happens because Discord CDN URLs contain time-limited authentication tokens that expire quickly (often within minutes). |
+| **Root Cause** | The existing CDN URL refresh workaround was only applied during initial message extraction in `message_router.py`. When the LM later calls `image_compare` with cached image URLs from channel_search results or conversation history, those URLs bypass the refresh logic and are passed directly to `SafeImageDownloader`, which fails because the tokens are expired. |
+| **Solution** | **1. Created `cdn_url_refresher.py`** — Extracted shared CDN URL refresh logic into a reusable module with `refresh_cdn_url()`, `refresh_all_cdn_urls()`, and `refresh_image_attachments()` functions. **2. Updated `image_downloader.py`** — Modified `SafeImageDownloader.download_image()` to always attempt CDN URL refresh via Discord API before downloading. Added `bot_instance` parameter to enable Discord API access. **3. Updated `message_router.py`** — Refactored to import from `cdn_url_refresher` instead of duplicating code. **4. Updated `message_handler.py`** — Passes `bot_instance` to `get_safe_downloader()` so all image downloads benefit from automatic refresh. |
+| **Files Modified** | `src/discord_bot/image_downloader.py` (added bot_instance, CDN refresh before download), `src/discord_bot/message_router.py` (import from cdn_url_refresher), `src/discord_bot/message_handler.py` (pass bot_instance to downloader) |
+| **Files Created** | `src/discord_bot/cdn_url_refresher.py` (shared CDN URL refresh module) |
+
+---
+
 ### PENDING-002: Hardcoded Turn Limit in Message Processing (range(3))
 
 | Field | Value |

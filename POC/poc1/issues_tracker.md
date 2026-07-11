@@ -168,6 +168,22 @@
 
 ---
 
+### ✅ BUG-TEST-001: test_channel_search_pagination.py — 24 Tests Failing Due to Outdated Features After Git Merge Recovery
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-TEST-001 |
+| **Date** | 2026-07-11 |
+| **Status** | ✅ **FIXED** (2026-07-11) |
+| **Severity** | Medium |
+| **Description** | The `test_channel_search_pagination.py` file had 24 failing tests out of 68 total. The tests were written for an old pagination design (with `max_pages`, `pages_scanned_so_far`, `before_message_id` as pagination cursor) that was replaced by the current sliding window approach (`offset` + `windows`) and deep search (`deep_search` + `max_depth`). This was caused by a git merge that introduced old test code, followed by recovery that changed the implementation but not the tests. |
+| **Root Cause** | 1. Git merge brought old test file with pagination features that no longer exist. 2. Implementation evolved to use sliding window (offset/windows) and deep search instead. 3. Tests were never updated to match new implementation. 4. ChannelSearchTool has class-level `_request_cache` that caused cross-test pollution. |
+| **Fix Applied** | **Complete rewrite of `test_channel_search_pagination.py`**: (1) Removed 24 tests for non-existent features (max_pages, pages_scanned_so_far, pagination metadata, BotCore pagination methods, ToolExecutor channel_skip handler). (2) Added 36 new tests covering: ChannelSkipTool (7 tests), ChannelSearch sliding window (8 tests), ChannelSearch deep search (6 tests), ChannelSearch filtering (5 tests), ChannelSearch edge cases (5 tests), ChannelSkip edge cases (4 tests), ToolResult dataclass (3 tests). (3) Added `ChannelSearchTool._request_cache = {}` clearing before tests that use execute() to avoid cross-test cache pollution. |
+| **Test Results** | 36 tests in test_channel_search_pagination.py — all passing. Full test suite: 152 tests — all passing. |
+| **Files Modified** | `tests/test_channel_search_pagination.py` — complete rewrite |
+
+---
+
 ## Known Bugs (Not Yet Fixed)
 
 ---
@@ -547,9 +563,28 @@
 | **Description** | Even when `channel_search` correctly finds messages with `image_urls`, the image URLs are NOT communicated to the main bot for follow-up actions (like `image_compare`). The issue is in the **result format**: the mini-context summarization output does not preserve image URLs in a structured way that the LM can use. |
 | **Root Cause** | The `_summarize_channel_search_batched()` method returns a text summary that focuses on "key points, topics discussed" but does not explicitly include image URLs. The `_format_channel_search_direct()` method DOES include image URLs (`IMAGES: [URL1], [URL2]`), but this format is only used when `use_mini_context=False`. |
 | **Evidence** | Terminal log shows direct format result includes image URLs: ```IMAGES: https://cdn.discordapp.com/attachments/...``` but mini-context result has: ```--- Batch 1 Summary ---\n\n\n``` (empty). |
-| **Related Issues** | BUG-SEARCH-003, BUG-014 (embeds), BUG-IMG-001 (image_describe consolidation) |
+| **Related Issues** | BUG-SEARCH-003, BUG-014 (embeds), BUG-IMG-001 (image_describe consolidation), **BUG-SEARCH-006** |
 | **Proposed Fix** | **Short-term**: In `_summarize_channel_search_batched()`, after getting the LM summary, extract and append any image URLs found in the original messages. **Long-term**: Create a structured result format that always includes image URLs regardless of summarization approach. |
 | **Files To Modify** | `src/discord_bot/tool_executor.py` → `_summarize_channel_search_batched()` |
+
+---
+
+### 📋 BUG-SEARCH-006: channel_search Batch Summarization Causes Extreme Latency (4+ Minutes for Simple Requests)
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-006 |
+| **Date** | 2026-07-11 |
+| **Status** | 🔴 Confirmed — Root Cause Identified + Log Evidence |
+| **Severity** | Critical |
+| **Description** | When the user asks a simple question like "find me any image on this server", the bot takes **4+ minutes** to respond. The root cause is the **batch summarization system** in `tool_executor.py` `_summarize_channel_search_batched()`. When `channel_search` returns >5 messages, the tool executor splits them into batches of 10 and sends EACH batch to LM Studio for summarization BEFORE the main bot even sees the results. |
+| **Log Evidence** | LMStudioLogs.log shows a single user request triggering 6 LM API calls: ```Turn 1: channel_search tool call (1s) → Turn 2: Batch 1 summary (74s, hit max_tokens=4096) → Turn 3: Batch 2 summary (69s) → Turn 4: Batch 3 summary (55s) → Turn 5: Batch 4 summary (56s) → Turn 6: Batch 5 summary (60s) → Turn 7: Final response (4s)``` Total: ~4 minutes 15 seconds. |
+| **Root Cause** | 1. **Batch summarization is unnecessary**: The `channel_search` tool already formats results with image URLs. The bot could respond immediately with raw results. 2. **Fixed batch_size=10**: Messages are split into fixed batches of 10, regardless of actual token count. 40 messages → 5 batches → 5 LM calls. 3. **First batch hits max_tokens=4096**: The summarization prompt asks for "list ALL image URLs + summarize key points" but max_tokens=4096 is too low, causing `finish_reason: "length"`. 4. **Each batch takes 55-74 seconds**: Multiplied by number of batches = extreme latency. |
+| **Current Flow** | ```User: "find me any image" → Bot: channel_search(limit=50, has_image=true) → Tool returns 40 messages → _summarize_channel_search_batched() splits into 5 batches → 5 LM calls (4+ min) → Bot finally gets results → Responds``` |
+| **Expected Flow** | ```User: "find me any image" → Bot: channel_search(limit=50, has_image=true) → Tool returns formatted results with image URLs → Bot sees images → Responds immediately``` |
+| **Related Issues** | BUG-SEARCH-003, BUG-SEARCH-004, BUG-013 (tool call loop), BUG-HANG-001 (context overload) |
+| **Proposed Fix** | **Fix A**: Remove unnecessary batch summarization when direct formatting would suffice. Only summarize when result >3000 chars. **Fix B**: Replace fixed batch_size=10 with token-aware packing (~50% of max_tokens per batch). **Fix C**: Increase mini-context max_tokens default from 4096 → 12288. **Fix D**: Add output length constraints to summarization prompt. **Fix E**: Make mini-context max_tokens configurable via UI. |
+| **Files To Modify** | `src/discord_bot/tool_executor.py` → `_summarize_channel_search_batched()`, `_handle_channel_search()`, `src/static/lib/settings.js`, `src/app.py`, `src/config.json` |
 
 ---
 

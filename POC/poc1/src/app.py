@@ -276,10 +276,10 @@ def set_max_tokens():
     data = request.get_json()
     tokens = data.get("max_tokens", 2500)
     
-    if not isinstance(tokens, int) or tokens < 1 or tokens > 65536:
+    if not isinstance(tokens, int) or tokens < 1 or tokens > 262144:
         return jsonify({
             "success": False,
-            "error": "Max tokens must be an integer between 1 and 65536"
+            "error": "Max tokens must be an integer between 1 and 262144"
         }), 400
     
     config.max_tokens = tokens
@@ -745,6 +745,7 @@ def get_tools_config():
     tools_config["context_messages_to_keep_fresh"] = config.context_compression_messages_to_keep_fresh
     tools_config["context_summary_length"] = config.context_compression_default_summary_length
     tools_config["context_lm_max_tokens"] = config.get("tools_config", "context_lm_max_tokens", 4096)
+    tools_config["mini_context_max_tokens"] = config.get("tools_config", "mini_context_max_tokens", 12288)
     return jsonify({
         "success": True,
         "tools_config": tools_config
@@ -766,8 +767,8 @@ def set_tools_config():
     tool_max_tokens = tools_config.get("tool_max_tokens", config.tool_max_tokens)
     try:
         tool_max_tokens = int(tool_max_tokens)
-        if tool_max_tokens < 128 or tool_max_tokens > 65536:
-            return jsonify({"success": False, "error": "tool_max_tokens must be between 128 and 65536"}), 400
+        if tool_max_tokens < 128 or tool_max_tokens > 262144:
+            return jsonify({"success": False, "error": "tool_max_tokens must be between 128 and 262144"}), 400
     except (ValueError, TypeError):
         return jsonify({"success": False, "error": "Invalid tool_max_tokens value"}), 400
     
@@ -784,8 +785,8 @@ def set_tools_config():
     final_max_tokens = tools_config.get("final_max_tokens", config.final_max_tokens)
     try:
         final_max_tokens = int(final_max_tokens)
-        if final_max_tokens < 128 or final_max_tokens > 65536:
-            return jsonify({"success": False, "error": "final_max_tokens must be between 128 and 65536"}), 400
+        if final_max_tokens < 128 or final_max_tokens > 262144:
+            return jsonify({"success": False, "error": "final_max_tokens must be between 128 and 262144"}), 400
     except (ValueError, TypeError):
         return jsonify({"success": False, "error": "Invalid final_max_tokens value"}), 400
     
@@ -799,7 +800,7 @@ def set_tools_config():
     if not isinstance(context_compression_enabled, bool):
         return jsonify({"success": False, "error": "context_compression_enabled must be a boolean"}), 400
     
-    context_token_threshold = tools_config.get("context_token_threshold", config.context_token_threshold)
+    context_token_threshold = tools_config.get("context_token_threshold", config.context_compression_token_threshold)
     try:
         context_token_threshold = int(context_token_threshold)
         if context_token_threshold < 50 or context_token_threshold > 95:
@@ -807,7 +808,7 @@ def set_tools_config():
     except (ValueError, TypeError):
         return jsonify({"success": False, "error": "Invalid context_token_threshold value"}), 400
     
-    context_message_threshold = tools_config.get("context_message_threshold", config.context_message_threshold)
+    context_message_threshold = tools_config.get("context_message_threshold", config.context_compression_message_threshold)
     try:
         context_message_threshold = int(context_message_threshold)
         if context_message_threshold < 5 or context_message_threshold > 50:
@@ -815,7 +816,7 @@ def set_tools_config():
     except (ValueError, TypeError):
         return jsonify({"success": False, "error": "Invalid context_message_threshold value"}), 400
     
-    context_messages_to_keep_fresh = tools_config.get("context_messages_to_keep_fresh", config.context_messages_to_keep_fresh)
+    context_messages_to_keep_fresh = tools_config.get("context_messages_to_keep_fresh", config.context_compression_messages_to_keep_fresh)
     try:
         context_messages_to_keep_fresh = int(context_messages_to_keep_fresh)
         if context_messages_to_keep_fresh < 2 or context_messages_to_keep_fresh > 15:
@@ -823,7 +824,7 @@ def set_tools_config():
     except (ValueError, TypeError):
         return jsonify({"success": False, "error": "Invalid context_messages_to_keep_fresh value"}), 400
     
-    context_summary_length = tools_config.get("context_summary_length", config.context_summary_length)
+    context_summary_length = tools_config.get("context_summary_length", config.context_compression_default_summary_length)
     try:
         context_summary_length = int(context_summary_length)
         if context_summary_length < 100 or context_summary_length > 1000:
@@ -832,13 +833,22 @@ def set_tools_config():
         return jsonify({"success": False, "error": "Invalid context_summary_length value"}), 400
     
     # Validate context_lm_max_tokens
-    context_lm_max_tokens = tools_config.get("context_lm_max_tokens", config.get("tools_config", "context_lm_max_tokens", 4096))
+    context_lm_max_tokens = tools_config.get("context_lm_max_tokens", config.get("tools_config", "context_lm_max_tokens", 262144))
     try:
         context_lm_max_tokens = int(context_lm_max_tokens)
-        if context_lm_max_tokens < 128 or context_lm_max_tokens > 65536:
-            return jsonify({"success": False, "error": "context_lm_max_tokens must be between 128 and 65536"}), 400
+        if context_lm_max_tokens < 128 or context_lm_max_tokens > 262144:
+            return jsonify({"success": False, "error": "context_lm_max_tokens must be between 128 and 262144"}), 400
     except (ValueError, TypeError):
         return jsonify({"success": False, "error": "Invalid context_lm_max_tokens value"}), 400
+    
+    # Validate mini_context_max_tokens (BUG-SEARCH-006 FIX)
+    mini_context_max_tokens = tools_config.get("mini_context_max_tokens", config.get("tools_config", "mini_context_max_tokens", 12288))
+    try:
+        mini_context_max_tokens = int(mini_context_max_tokens)
+        if mini_context_max_tokens < 1024 or mini_context_max_tokens > 65536:
+            return jsonify({"success": False, "error": "mini_context_max_tokens must be between 1024 and 65536"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"success": False, "error": "Invalid mini_context_max_tokens value"}), 400
     
     # Apply all settings
     config.tool_reasoning_brevity = reasoning_brevity
@@ -847,11 +857,12 @@ def set_tools_config():
     config.final_max_tokens = final_max_tokens
     config.tools_use_tool_calling = use_tool_calling
     config.context_compression_enabled = context_compression_enabled
-    config.context_token_threshold = context_token_threshold
-    config.context_message_threshold = context_message_threshold
-    config.context_messages_to_keep_fresh = context_messages_to_keep_fresh
-    config.context_summary_length = context_summary_length
+    config.context_compression_token_threshold = context_token_threshold
+    config.context_compression_message_threshold = context_message_threshold
+    config.context_compression_messages_to_keep_fresh = context_messages_to_keep_fresh
+    config.context_compression_default_summary_length = context_summary_length
     config.set("tools_config", "context_lm_max_tokens", context_lm_max_tokens)
+    config.set("tools_config", "mini_context_max_tokens", mini_context_max_tokens)
     config.save()
     
     # Apply to Discord bot if running
@@ -868,10 +879,11 @@ def set_tools_config():
             "context_message_threshold": context_message_threshold,
             "context_messages_to_keep_fresh": context_messages_to_keep_fresh,
             "context_summary_length": context_summary_length,
-            "context_lm_max_tokens": context_lm_max_tokens
+            "context_lm_max_tokens": context_lm_max_tokens,
+            "mini_context_max_tokens": mini_context_max_tokens
         })
     
-    logger.info(f"Tools config updated: tool_max_tokens={tool_max_tokens}, tool_temperature={tool_temperature}, final_max_tokens={final_max_tokens}, context_compression={context_compression_enabled}", module="app")
+    logger.info(f"Tools config updated: tool_max_tokens={tool_max_tokens}, tool_temperature={tool_temperature}, final_max_tokens={final_max_tokens}, mini_context_max_tokens={mini_context_max_tokens}, context_compression={context_compression_enabled}", module="app")
     
     return jsonify({
         "success": True,
