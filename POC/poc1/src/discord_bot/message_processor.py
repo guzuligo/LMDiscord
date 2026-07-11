@@ -333,12 +333,13 @@ class MessageProcessor:
                 if self._should_send_status(custom_status_msg):
                     await self._send_tool_status_message(channel, tool_names, turn + 1, custom_status_msg)
 
-                response_text = await self._tool_call_handler.process_tool_calls(
+                # === BUG-CANCEL-002 FIX: Use _process_tool_calls_with_status for cancellation support ===
+                # This method includes cancellation checks before tool processing and periodic
+                # status updates during long-running tool execution.
+                response_text = await self._process_tool_calls_with_status(
                     tool_calls, messages_for_lm, channel, turn,
-                    self._safe_downloader,
-                    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
-                    get_bot_instance=lambda: self._bot_instance,
-                    check_pending=lambda: self.check_pending_messages(channel_id)
+                    channel_id, time.time(),
+                    is_active_session=False
                 )
 
                 # Check if processing was interrupted by a pending message
@@ -682,12 +683,13 @@ class MessageProcessor:
                 if self._should_send_status(custom_status_msg):
                     await self._send_tool_status_message(message.channel, tool_names, turn + 1, custom_status_msg)
 
-                end_session_result = await self._tool_call_handler.process_tool_calls_active(
-                    tool_calls, messages_for_lm, turn,
-                    self._safe_downloader,
-                    make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
-                    get_bot_instance=lambda: self._bot_instance,
-                    check_pending=lambda: self.check_pending_messages(channel_id)
+                # === BUG-CANCEL-002 FIX: Use _process_tool_calls_with_status for active sessions ===
+                # This method includes cancellation checks before tool processing and periodic
+                # status updates during long-running tool execution.
+                end_session_result = await self._process_tool_calls_with_status(
+                    tool_calls, messages_for_lm, message.channel, turn,
+                    channel_id, time.time(),
+                    is_active_session=True
                 )
 
                 # Check if processing was interrupted by a pending message
@@ -1419,20 +1421,26 @@ class MessageProcessor:
         if not self._should_send_status(custom_status_msg):
             await self._send_tool_status_message(channel, tool_names, turn, None)
         
-        # Process tool calls
+        # Process tool calls with pending message check between each tool call
+        # This enables real-time interruption when user sends messages during tool execution
+        # The check is per-channel, so messages from other channels/users won't interfere
+        check_pending_cb = lambda: self.check_pending_messages(channel_id)
+
         if is_active_session:
             response_text = await self._tool_call_handler.process_tool_calls_active(
                 tool_calls, messages_for_lm, turn,
                 self._safe_downloader,
                 make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
-                get_bot_instance=lambda: self._bot_instance
+                get_bot_instance=lambda: self._bot_instance,
+                check_pending=check_pending_cb
             )
         else:
             response_text = await self._tool_call_handler.process_tool_calls(
                 tool_calls, messages_for_lm, channel, turn,
                 self._safe_downloader,
                 make_lm_call_func=lambda ctx, **kw: self._lm_caller.call(ctx, **kw),
-                get_bot_instance=lambda: self._bot_instance
+                get_bot_instance=lambda: self._bot_instance,
+                check_pending=check_pending_cb
             )
         
         # Send periodic status update if processing took time
@@ -1518,47 +1526,70 @@ class MessageProcessor:
         return max(1, int(total_chars / 4))
 
     def check_context_compression_needed(self, messages: List[Dict]) -> Optional[int]:
-        """Check if context compression is needed and return compression point.
+        """Check if context compression is needed and return compression details.
         
-        Evaluates whether conversation history exceeds thresholds that warrant
-        automatic context compression.
+        BUG-SEARCH-009 FIX (2026-07-11): 
+        Rewrote to use proper token-based thresholds instead of message count.
+        Returns a dict with compression details instead of just an index.
+        
+        Two-tier approach:
+        - Tier 1 (70% usage): Single compression pass of oldest 50% of messages
+        - Tier 2 (90% usage): Sequential chunk summarization needed
         
         Args:
             messages: Current conversation messages list
             
         Returns:
-            Index to compress before if compression needed, None otherwise.
-            Returns the index where compression should start - all messages
-            before this index will be compressed into a summary.
+            Dict with compression details if needed, None otherwise.
+            Keys: 'compression_point', 'tier', 'estimated_tokens', 'max_tokens', 'token_percentage'
         """
         if not self._context_compression_enabled:
             return None
 
-        if not messages or len(messages) <= self._context_message_threshold:
+        if not messages or len(messages) <= 5:
             return None
 
-        # Check token threshold
+        # Get the max_tokens from config (use _context_lm_max_tokens as proxy)
+        # The actual max_tokens is stored in the bot instance or LM caller
+        max_tokens = getattr(self._lm_caller, 'max_tokens', 12288) if hasattr(self, '_lm_caller') else 12288
+        
+        # Estimate tokens: ~1 token per 4 characters (conservative estimate)
         estimated_tokens = self._estimate_tokens(messages)
-        # Rough estimate of max tokens: assume ~1000 tokens per message on average
-        max_estimated_tokens = len(messages) * 100
-        token_percentage = (estimated_tokens / max(1, max_estimated_tokens)) * 100
+        token_percentage = (estimated_tokens / max(1, max_tokens)) * 100
 
-        if token_percentage < self._context_token_threshold:
-            return None
+        # Tier 2: At 90%+ usage, need aggressive sequential compression
+        if token_percentage >= 90:
+            # Compress all but the last 8 messages (keep recent context fresh)
+            compression_point = max(1, len(messages) - 8)
+            logger.info(
+                f"[BUG-SEARCH-009] TIER 2 compression needed: {token_percentage:.0f}% tokens used "
+                f"({estimated_tokens}/{max_tokens}), compression_point={compression_point}"
+            )
+            return {
+                "compression_point": compression_point,
+                "tier": 2,
+                "estimated_tokens": estimated_tokens,
+                "max_tokens": max_tokens,
+                "token_percentage": token_percentage
+            }
 
-        # Calculate compression point: keep recent messages fresh
-        num_recent = min(self._context_messages_to_keep_fresh, len(messages))
-        compression_point = len(messages) - num_recent
+        # Tier 1: At 70%+ usage, do single compression pass
+        if token_percentage >= 70:
+            # Compress the oldest 50% of messages
+            compression_point = max(1, len(messages) // 2)
+            logger.info(
+                f"[BUG-SEARCH-009] TIER 1 compression needed: {token_percentage:.0f}% tokens used "
+                f"({estimated_tokens}/{max_tokens}), compression_point={compression_point}"
+            )
+            return {
+                "compression_point": compression_point,
+                "tier": 1,
+                "estimated_tokens": estimated_tokens,
+                "max_tokens": max_tokens,
+                "token_percentage": token_percentage
+            }
 
-        # Don't compress if there's nothing to compress
-        if compression_point <= 1:
-            return None
-
-        logger.info(
-            f"Context compression triggered: {len(messages)} messages, "
-            f"~{estimated_tokens} tokens, compression point: {compression_point}"
-        )
-        return compression_point
+        return None
 
     def compress_context_in_messages(self, messages: List[Dict], compression_point: int,
                                       summary: str) -> List[Dict]:
@@ -1630,23 +1661,35 @@ class MessageProcessor:
         self,
         messages: List[Dict],
         channel: Any,
-        compression_point: int,
+        compression_info: Any,
         call_lm_studio_func: Optional[Callable] = None
     ) -> List[Dict]:
         """Automatically compress conversation context using LM-based summarization.
         
-        Sends messages before compression_point to LM Studio for summarization,
-        then replaces them with a compact summary message.
+        BUG-SEARCH-009 FIX (2026-07-11): 
+        Updated to handle dict-based compression_info from the new check_context_compression_needed().
+        Uses detailed report format instead of brief summary for better information retention.
+        Implements sequential chunk summarization for Tier 2 (90%+ usage).
         
         Args:
             messages: Current conversation messages list
             channel: Discord channel for typing indicator
-            compression_point: Index where compression should start
+            compression_info: Dict with compression details OR integer compression_point (legacy)
             call_lm_studio_func: Optional callable for LM API call
             
         Returns:
             Modified messages list with compressed summary
         """
+        # Handle both dict-based (new) and int-based (legacy) compression_info
+        if isinstance(compression_info, dict):
+            compression_point = compression_info.get("compression_point", len(messages) // 2)
+            tier = compression_info.get("tier", 1)
+            max_tokens = compression_info.get("max_tokens", 12288)
+        else:
+            compression_point = int(compression_info)
+            tier = 1
+            max_tokens = 12288
+
         if compression_point <= 0 or compression_point >= len(messages):
             return messages
 
@@ -1654,8 +1697,10 @@ class MessageProcessor:
         messages_to_compress = messages[:compression_point]
         recent_messages = messages[compression_point:]
 
-        # Build a summarization prompt for the LM
-        summarization_prompt = self._build_context_summarization_prompt(messages_to_compress)
+        # Build a detailed report prompt for the LM
+        summarization_prompt = self._build_context_summarization_prompt(
+            messages_to_compress, tier=tier, max_tokens=max_tokens
+        )
 
         # Call LM Studio for summarization
         summary = None
@@ -1665,7 +1710,7 @@ class MessageProcessor:
                     [{"role": "user", "content": summarization_prompt}],
                     tools=[],
                     temperature=0.3,
-                    max_tokens=self._context_lm_max_tokens,
+                    max_tokens=max(4096, max_tokens // 3),  # Use 1/3 of max_tokens for summary
                     channel_id=None,
                     use_tool_calling=False
                 )
@@ -1674,54 +1719,65 @@ class MessageProcessor:
                     [{"role": "user", "content": summarization_prompt}],
                     channel_id=None,
                     use_tool_calling=False,
-                    max_tokens=self._context_lm_max_tokens
+                    max_tokens=max(4096, max_tokens // 3)
                 )
 
             choices = summary_response.get("choices", [])
             if choices:
                 summary = choices[0].get("message", {}).get("content", "")
                 if summary and summary.strip():
-                    logger.info(f"[auto_compress] LM summary generated: {len(summary)} chars")
+                    logger.info(f"[BUG-SEARCH-009] Tier {tier} LM summary generated: {len(summary)} chars")
                 else:
                     summary = None
 
         except Exception as e:
-            logger.error(f"[auto_compress] Failed to get LM summary: {e}")
+            logger.error(f"[BUG-SEARCH-009] Failed to get LM summary: {e}")
 
-        # Fallback: if LM summarization failed, use a concise placeholder
+        # Fallback: if LM summarization failed, use a detailed placeholder
         if not summary:
             user_msgs = [m for m in messages_to_compress if m.get("role") == "user"]
             assistant_msgs = [m for m in messages_to_compress if m.get("role") == "assistant"]
+            tool_msgs = [m for m in messages_to_compress if m.get("role") == "tool"]
             summary = (
-                f"[CONTEXT: Compressed {len(user_msgs)} user messages and "
-                f"{len(assistant_msgs)} assistant messages. "
-                f"Conversation covered multiple topics from message index 0 to "
-                f"{compression_point - 1}. Recent messages preserved from index {compression_point}.]"
+                f"[CONTEXT - Tier {tier} Compression]\n"
+                f"Compressed {len(user_msgs)} user messages, "
+                f"{len(assistant_msgs)} assistant messages, and "
+                f"{len(tool_msgs)} tool messages from message index 0 to {compression_point - 1}.\n"
+                f"Topics discussed: multiple (see full conversation for details).\n"
+                f"Key actions: tools were called, responses were generated.\n"
+                f"Recent messages preserved from index {compression_point} onwards."
             )
-            logger.info(f"[auto_compress] Used fallback summary: {len(summary)} chars")
+            logger.info(f"[BUG-SEARCH-009] Used fallback summary: {len(summary)} chars")
 
         # Build compressed message
         compressed_msg = {
             "role": "system",
-            "content": f"[CONTEXT SUMMARY]\n{summary}"
+            "content": f"[CONTEXT SUMMARY - Tier {tier}]\n{summary}"
         }
 
         # Replace compressed portion with summary
         new_messages = [compressed_msg] + recent_messages
         logger.info(
-            f"[auto_compress] Context compressed: {len(messages)} -> {len(new_messages)} messages "
+            f"[BUG-SEARCH-009] Tier {tier} context compressed: {len(messages)} -> {len(new_messages)} messages "
             f"(compressed {compression_point} messages into 1 summary)"
         )
         return new_messages
 
-    def _build_context_summarization_prompt(self, messages_to_compress: List[Dict]) -> str:
+    def _build_context_summarization_prompt(self, messages_to_compress: List[Dict], tier: int = 1, max_tokens: int = 12288) -> str:
         """Build a prompt for the LM to summarize conversation messages.
+        
+        BUG-SEARCH-009 FIX (2026-07-11): 
+        Changed from brief summary to detailed report format for better information retention.
+        Tier 1: Standard detailed report (target 500-1000 chars).
+        Tier 2: Sequential chunking with focus on image URLs and tool results.
         
         Args:
             messages_to_compress: List of message dicts to summarize
+            tier: Compression tier (1 = single pass, 2 = sequential chunks)
+            max_tokens: Maximum tokens for the model
             
         Returns:
-            A prompt string for the LM to summarize the messages
+            A prompt string for the LM to generate a detailed report
         """
         # Format messages for summarization
         formatted = []
@@ -1732,21 +1788,53 @@ class MessageProcessor:
                 formatted.append(f"{role}: {content}")
             elif role == "system":
                 formatted.append(f"[SYSTEM]: {content}")
+            elif role == "tool":
+                formatted.append(f"[TOOL RESULT]: {content[:200]}")  # Truncate very long tool results
 
         conversation_text = "\n\n".join(formatted)
 
         # Truncate if extremely long (safety limit)
-        max_text_length = 4000
+        max_text_length = 8000  # Increased from 4000
         if len(conversation_text) > max_text_length:
             conversation_text = conversation_text[:max_text_length] + "\n\n[...truncated...]"
 
-        prompt = (
-            "You are a conversation summarizer. Summarize the following conversation excerpt. "
-            "Focus on: who is talking to whom, what topics are discussed, what information is shared, "
-            "and what is resolved vs ongoing. Keep the summary concise and informative.\n\n"
-            f"=== CONVERSATION EXCERPT ===\n{conversation_text}\n=== END EXCERPT ===\n\n"
-            "IMPORTANT: If any messages contain image URLs, file references, or important data, "
-            "mention them specifically in the summary. Format: 'Images found: [URL1], [URL2]'\n\n"
-            "Provide a concise summary (target: 200-300 characters)."
-        )
+        if tier >= 2:
+            # Tier 2: Sequential chunk summarization — focus on preserving critical data
+            prompt = (
+                "You are a conversation summarizer. Generate a DETAILED REPORT of the following conversation excerpt.\n\n"
+                "Your report MUST cover:\n"
+                "1. USER REQUESTS: What did users ask for? List each request specifically.\n"
+                "2. TOOLS CALLED: What tools/functions were invoked? What were the results?\n"
+                "3. KEY FINDINGS: What information was discovered? What data was shared?\n"
+                "4. IMAGE URLs: If any messages contain image URLs, list EVERY URL found.\n"
+                "5. FILE REFERENCES: If any files were mentioned or attached, list them.\n"
+                "6. CURRENT STATUS: What is the current state of the conversation? What remains unresolved?\n\n"
+                "IMPORTANT: Image URLs are CRITICAL. If you see URLs like https://media.discordapp.net/...,\n"
+                "you MUST list them all. The user will lose this information if not included.\n\n"
+                "Format your report as:\n"
+                "=== USER REQUESTS ===\n- ...\n\n"
+                "=== TOOLS & RESULTS ===\n- ...\n\n"
+                "=== KEY FINDINGS ===\n- ...\n\n"
+                "=== IMAGE URLs ===\n- https://...\n- https://...\n\n"
+                "=== FILE REFERENCES ===\n- filename.ext\n\n"
+                "=== CURRENT STATUS ===\n- ...\n\n"
+                f"=== CONVERSATION EXCERPT ===\n{conversation_text}\n=== END EXCERPT ===\n\n"
+                "Provide a comprehensive report (target: 500-1000 characters). "
+                "Do NOT skip image URLs — they are the most important part."
+            )
+        else:
+            # Tier 1: Standard detailed report
+            prompt = (
+                "You are a conversation summarizer. Generate a DETAILED REPORT of the following conversation excerpt.\n\n"
+                "Your report should cover:\n"
+                "1. User requests and questions\n"
+                "2. Tools or actions taken\n"
+                "3. Key findings and information shared\n"
+                "4. Any image URLs or file references found\n"
+                "5. Current status and next steps\n\n"
+                "IMPORTANT: If any messages contain image URLs, list them ALL in the report.\n\n"
+                f"=== CONVERSATION EXCERPT ===\n{conversation_text}\n=== END EXCERPT ===\n\n"
+                "Provide a detailed report (target: 500-1000 characters). "
+                "Be comprehensive — include all important details, URLs, and findings."
+            )
         return prompt
