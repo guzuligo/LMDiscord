@@ -62,6 +62,21 @@ This project uses several `.md` files to track progress, issues, and fixes. Here
 
 ---
 
+## 📋 Log Files
+
+### `LMStudioLogs.log` — **LM Studio Application Logs**
+- **Purpose**: Contains logs copied from LM Studio's internal logging system
+- **How to populate**: Copy logs from LM Studio's application logs and paste them into this file manually
+- **Time validation**: The file's update time should be within or after the dates found in `terminal.log`. This ensures the LM Studio logs correspond to the same session or timeframe as the application's terminal logs
+- **Use case**: Debugging language model interactions, API calls, and LM Studio-specific issues
+
+### `terminal.log` — **Terminal Application Logs**
+- **Purpose**: Contains terminal logs captured after running the application
+- **When generated**: Created when running the app from the terminal (e.g., `python app.py` or `python src/main.py`)
+- **Use case**: Captures application startup messages, runtime errors, console output, and general application behavior
+
+---
+
 ## 📊 Quick Reference
 
 | File | Use | Status |
@@ -72,6 +87,8 @@ This project uses several `.md` files to track progress, issues, and fixes. Here
 | `solved_issues.md` | Fixed issues archive | Historical |
 | `bug_fix_plan.md` | Complex bug fix plans | Per-incident |
 | `UNIT_INTEGRATION_TESTING_GUID.md` | Unit & integration testing reference | Reference |
+| `LMStudioLogs.log` | LM Studio application logs (copy from LM Studio) | Reference |
+| `terminal.log` | Terminal output logs (from running the app) | Reference |
 
 ---
 

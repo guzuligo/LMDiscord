@@ -183,6 +183,10 @@ class ChannelSearchTool(BaseTool):
                     "minimum": 1,
                     "maximum": 5
                 },
+                "before_message_id": {
+                    "type": "string",
+                    "description": "Discord message ID. If provided, fetches messages BEFORE this message (older messages). Use this to look at message history preceding a specific point, e.g., 'What was being discussed before this message?' Requires channel to be specified."
+                },
                 "deep_search": {
                     "type": "boolean",
                     "description": "Enable deep search mode. When True, the bot will scan up to max_depth messages backward from newest to oldest, stopping early when a match is found. Use this to find older messages that are beyond the last 50 messages. Filtering is applied via explicit parameters (has_image, username, etc.), NOT via operator syntax in search_query.",
@@ -632,10 +636,14 @@ class ChannelSearchTool(BaseTool):
                 entry_parts.append(f"**{display_name}** ({author}) — {timestamp}:")
                 entry_parts.append(f"  {content}")
 
-                # Image indicator — include actual URLs for LM to use
+                # Image indicator — use Discord-compatible markdown format
+                # Discord renders ![alt](URL) as a clickable image preview
+                # This format is compatible with Discord's markdown parser
+                # Includes reference marker [ref:img:N] for tracking
                 if has_image and msg.get("image_urls"):
-                    for url in msg["image_urls"]:
-                        entry_parts.append(f"  [📷 Image: {url}]")
+                    for j, url in enumerate(msg["image_urls"]):
+                        # Use Discord markdown image syntax for clickable image previews
+                        entry_parts.append(f"  ![image]({url}) [ref:img:{j}]")
 
                 # Attachment filenames (non-image files)
                 attachments = msg.get("attachments", [])

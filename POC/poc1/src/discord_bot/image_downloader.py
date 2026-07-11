@@ -3,10 +3,13 @@ Safe Image Downloader Module
 
 Provides SafeImageDownloader class for securely downloading images
 with whitelist-based hostname validation.
+
+Integrated with CDN URL refresher to always attempt fresh URL retrieval
+for Discord CDN images before downloading, since CDN URLs expire quickly.
 """
 
 import logging
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any
 
 import aiohttp
 from urllib.parse import urlparse, urlunparse
@@ -72,19 +75,26 @@ def strip_expired_cdn_params(url: str) -> str:
 class SafeImageDownloader:
     """Safely downloads images with whitelist-based hostname validation.
     
-    Handles expired CDN token scenarios by:
-    1. Stripping query parameters (expiration tokens) from Discord CDN URLs before download
-    2. Retrying with Referer headers on 403/401/content-type errors
-    3. Raising ExpiredTokenError for user-friendly handling upstream
+    Integrated with CDN URL refresher:
+    1. Always attempts to refresh Discord CDN URLs via Discord API before download
+    2. Strips query parameters (expiration tokens) from Discord CDN URLs before download
+    3. Retries with Referer headers on 403/401/content-type errors
+    4. Raises ExpiredTokenError for user-friendly handling upstream
+    
+    The bot_instance parameter enables automatic CDN URL refresh for all Discord
+    image downloads, ensuring fresh URLs are used since CDN tokens expire quickly.
     """
 
-    def __init__(self, allowed_hostnames: Optional[List[str]] = None):
+    def __init__(self, allowed_hostnames: Optional[List[str]] = None, 
+                 bot_instance: Any = None):
         """Initialize with allowed hostnames whitelist.
         
         Args:
             allowed_hostnames: List of allowed hostnames (e.g., ['cdn.discordapp.com'])
+            bot_instance: Optional DiscordBot instance for CDN URL refresh
         """
         self.allowed_hostnames = allowed_hostnames or []
+        self.bot_instance = bot_instance
 
     def is_hostname_allowed(self, url: str) -> Tuple[bool, str]:
         """Check if a URL's hostname is in the allowed list.
@@ -165,9 +175,9 @@ class SafeImageDownloader:
     async def download_image(self, url: str) -> bytes:
         """Safely download an image from a URL.
         
-        For Discord CDN URLs, strips expiration query parameters (ex=, is=, hm=)
-        before download to work around stale token issues from old message embeds.
-        If the stripped URL fails, falls back to the original URL.
+        For Discord CDN URLs, always attempts to refresh via Discord API first
+        to get fresh attachment URLs (since CDN tokens expire quickly).
+        Falls back to stripping expiration params and Referer header retries.
         
         Validates hostname against whitelist, checks content type,
         enforces size limits and timeouts.
@@ -190,30 +200,46 @@ class SafeImageDownloader:
         parsed = urlparse(url)
         hostname = parsed.hostname or ""
 
-        # Step 1.5: For Discord CDN URLs, try stripping expiration params first
+        # Step 1.5: For Discord CDN URLs, always attempt to refresh via Discord API
+        # since CDN URLs expire very quickly. This takes precedence over other
+        # fallback strategies.
+        download_url = url
         original_url = url
-        if hostname in DISCORD_CDN_HOSTS and parsed.query:
+        if hostname in DISCORD_CDN_HOSTS and self.bot_instance:
+            try:
+                from src.discord_bot.cdn_url_refresher import refresh_cdn_url
+                fresh_url = await refresh_cdn_url(self.bot_instance, url)
+                if fresh_url:
+                    logger.info(f"CDN URL refreshed via Discord API: {url[:80]}... -> {fresh_url[:80]}...")
+                    download_url = fresh_url
+                else:
+                    logger.debug(f"CDN URL refresh returned None, proceeding with fallback strategies")
+            except Exception as e:
+                logger.warning(f"CDN URL refresh failed, falling back to existing strategies: {e}")
+
+        # Step 1.6: If refresh didn't help, try stripping expiration params
+        if download_url == url and hostname in DISCORD_CDN_HOSTS and parsed.query:
             # Check if URL has expiration-related params
             has_expiry_params = any(p in parsed.query for p in ["ex=", "is=", "hm=", "&ex=", "&is=", "&hm="])
             if has_expiry_params:
                 sanitized_url = strip_expired_cdn_params(url)
                 logger.info(f"Discord CDN URL has expired params, trying sanitized URL: {sanitized_url[:80]}...")
-                url = sanitized_url
+                download_url = sanitized_url
 
-        # Step 2: Download with timeout and size limit
+        # Step 2: Download with timeout and size limit (try refreshed/sanitized URL first)
         try:
-            raw_bytes = await self._download_with_session(url)
+            raw_bytes = await self._download_with_session(download_url)
             logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname}")
             return raw_bytes
         except (aiohttp.ClientResponseError, ValueError) as e:
             error_str = str(e).lower()
 
-            # If we already tried the sanitized URL, fall back to the original URL with expiry params
-            if url != original_url and hostname in DISCORD_CDN_HOSTS:
-                logger.info(f"Sanitized URL failed, falling back to original URL with expiry params: {original_url[:80]}...")
-                url = original_url
+            # If we already tried the sanitized/refreshed URL, fall back to the original URL with expiry params
+            if download_url != original_url and hostname in DISCORD_CDN_HOSTS:
+                logger.info(f"Sanitized/refreshed URL failed, falling back to original URL with expiry params: {original_url[:80]}...")
+                download_url = original_url
                 try:
-                    raw_bytes = await self._download_with_session(url)
+                    raw_bytes = await self._download_with_session(download_url)
                     logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} using original URL")
                     return raw_bytes
                 except Exception as fallback_error:
@@ -223,47 +249,47 @@ class SafeImageDownloader:
             # Handle content-type mismatch — CDN may have returned an error page (text/plain)
             # This commonly happens when CDN URLs have expired. Try with Referer header before giving up.
             if hostname in DISCORD_CDN_HOSTS and isinstance(e, ValueError) and "content type" in error_str:
-                logger.warning(f"Content-type mismatch for {url}: {error_str}, retrying with Referer header")
+                logger.warning(f"Content-type mismatch for {download_url}: {error_str}, retrying with Referer header")
                 try:
                     referer_headers = {"Referer": "https://discord.com", "Origin": "https://discord.com"}
-                    raw_bytes = await self._download_with_session(url, headers=referer_headers)
+                    raw_bytes = await self._download_with_session(download_url, headers=referer_headers)
                     logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} with Referer+Origin headers (content-type retry)")
                     return raw_bytes
                 except Exception as retry_error:
-                    logger.warning(f"Referer retry also failed for {url}: {retry_error}")
+                    logger.warning(f"Referer retry also failed for {download_url}: {retry_error}")
                     # Continue to 403/404 handling below
 
             # Handle 403 Forbidden — expired authentication token
             # This is the primary symptom of stale CDN URLs from old message embeds.
             # Strip query params and retry once, as the base URL may still be accessible.
             if hostname in ("cdn.discordapp.com", "media.discordapp.net") and ("403" in error_str or "forbidden" in error_str):
-                logger.warning(f"Got 403 Forbidden for {url} — token likely expired")
+                logger.warning(f"Got 403 Forbidden for {download_url} — token likely expired")
                 # Try with Referer header first
                 try:
                     referer_headers = {"Referer": "https://discord.com", "Origin": "https://discord.com"}
-                    raw_bytes = await self._download_with_session(url, headers=referer_headers)
+                    raw_bytes = await self._download_with_session(download_url, headers=referer_headers)
                     logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} with Referer+Origin headers after 403")
                     return raw_bytes
                 except Exception as retry_error:
-                    logger.warning(f"Retry with Referer+Origin also failed for {url}: {retry_error}")
+                    logger.warning(f"Retry with Referer+Origin also failed for {download_url}: {retry_error}")
                     # Raise ExpiredTokenError for user-friendly handling upstream
                     raise ExpiredTokenError(
                         f"Image URL has expired (403 Forbidden). Discord attachment URLs are time-limited. "
-                        f"Please re-share the image: {url}"
+                        f"Please re-share the image: {download_url}"
                     ) from e
             
             # For Discord CDN hosts, retry with Referer header on 404 or content-type errors
             # (Discord sometimes returns HTML error pages that pass initial checks)
             if hostname in ("cdn.discordapp.com", "media.discordapp.net") and ("404" in error_str or "not found" in error_str):
-                logger.info(f"Got 404 for {url}, retrying with Referer header (image may have been deleted/moved)")
+                logger.info(f"Got 404 for {download_url}, retrying with Referer header (image may have been deleted/moved)")
                 try:
                     referer_headers = {"Referer": "https://discord.com"}
-                    raw_bytes = await self._download_with_session(url, headers=referer_headers)
+                    raw_bytes = await self._download_with_session(download_url, headers=referer_headers)
                     logger.info(f"Successfully downloaded {len(raw_bytes)} bytes from {hostname} with Referer header")
                     return raw_bytes
                 except Exception as retry_error:
-                    logger.warning(f"Retry with Referer also failed for {url}: {retry_error}")
-                    raise ValueError(f"Image not found (404) even with Referer retry: {url}") from e
+                    logger.warning(f"Retry with Referer also failed for {download_url}: {retry_error}")
+                    raise ValueError(f"Image not found (404) even with Referer retry: {download_url}") from e
             raise
 
 
@@ -271,16 +297,21 @@ class SafeImageDownloader:
 _safe_downloader = None
 
 
-def get_safe_downloader(allowed_hostnames: Optional[List[str]] = None) -> SafeImageDownloader:
+def get_safe_downloader(allowed_hostnames: Optional[List[str]] = None, 
+                        bot_instance: Any = None) -> SafeImageDownloader:
     """Get or create the global safe image downloader instance.
     
     Args:
         allowed_hostnames: Optional list of allowed hostnames (cached on first call)
+        bot_instance: Optional DiscordBot instance for CDN URL refresh
         
     Returns:
         SafeImageDownloader instance
     """
     global _safe_downloader
     if _safe_downloader is None:
-        _safe_downloader = SafeImageDownloader(allowed_hostnames=allowed_hostnames or [])
+        _safe_downloader = SafeImageDownloader(
+            allowed_hostnames=allowed_hostnames or [],
+            bot_instance=bot_instance
+        )
     return _safe_downloader

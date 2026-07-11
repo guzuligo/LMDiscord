@@ -563,6 +563,7 @@ class DiscordBot:
         max_depth: int = 500,
         message_id: Optional[int] = None,
         link_channel_id: Optional[int] = None,
+        before_message_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Fetch recent messages from Discord channels.
 
@@ -587,6 +588,10 @@ class DiscordBot:
                          backward pagination until matches found or max_depth reached.
             max_depth: Maximum number of messages to scan when deep_search is enabled
                        (default 500, max 5000).
+            message_id: Optional message ID to fetch for image attachments.
+            link_channel_id: Optional channel ID from a Discord message link.
+            before_message_id: Optional Discord message ID. When provided, fetches messages
+                               BEFORE this message (older history). Requires channel to be specified.
 
         Returns:
             Dict with 'messages', 'available_channels', and optionally 'error'.
@@ -636,6 +641,12 @@ class DiscordBot:
                     max_depth=max_depth,
                     has_image_filter=self._extract_has_filter(search_query),
                     from_filter=username or self._extract_from_filter(search_query),
+                )
+            elif before_message_id:
+                # Fetch messages BEFORE a specific message ID
+                logger.info(f"[channel_search] Fetching messages before message {before_message_id} in channel {target_channel.name}")
+                messages = await self._fetch_channel_history(
+                    target_channel, limit, before_message_id=str(before_message_id), windows=windows
                 )
             else:
                 messages = await self._fetch_channel_history(
@@ -782,18 +793,24 @@ class DiscordBot:
         limit: int = 15,
         offset: int = 0,
         windows: int = 1,
+        before_message_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch recent messages from a Discord text channel.
 
         Supports sliding window pattern for accessing older messages.
         When windows > 1, each window fetches 'limit' messages, separated
         by 'limit' skipped messages (non-contiguous windows).
+        When before_message_id is provided, fetches messages BEFORE that
+        message (older history) using Discord's backward pagination.
 
         Args:
             channel: The Discord text channel.
             limit: Maximum number of messages to fetch per window.
             offset: Number of most recent messages to skip before first window.
             windows: Number of non-contiguous message windows to fetch.
+            before_message_id: Optional Discord message ID. When provided,
+                               fetches messages BEFORE this message using
+                               Discord's backward pagination (channel.history with before=).
 
         Returns:
             List of message dicts (messages from all windows, newest first).
@@ -801,38 +818,82 @@ class DiscordBot:
         all_messages = []
 
         try:
-            for w in range(windows):
-                # Calculate the skip offset for this window:
-                # Window 0: skip 'offset' messages
-                # Window 1+: skip 'offset + (w * limit)' messages
-                window_skip = offset + (w * limit) if w > 0 else offset
+            if before_message_id:
+                # ====================================================================
+                # BEFORE_MESSAGE_ID MODE: Fetch messages older than a specific message
+                # ====================================================================
+                # Use Discord's backward pagination: channel.history(limit=X, before=message_id)
+                # The before parameter accepts:
+                # - A discord.Message object
+                # - An integer (message ID / snowflake)
+                # - A datetime
+                # We pass the raw integer ID directly.
 
-                # Fetch (limit + skip) to be able to skip and then take 'limit'
-                fetch_limit = window_skip + limit
-                fetched = []
-                try:
-                    async for msg in channel.history(limit=fetch_limit, oldest_first=False):
-                        fetched.append(msg)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch messages from channel {channel.id} (window {w}): {e}")
-                    break
+                current_before = int(before_message_id)
+                fetch_limit = limit  # How many messages to actually return
 
-                # Skip the first 'window_skip' messages, then take 'limit'
-                if window_skip > 0:
-                    # If we have fewer messages than skip, this window is empty
-                    if len(fetched) <= window_skip:
-                        logger.info(f"Channel {channel.id}: Window {w} has no messages at offset {window_skip}")
-                        continue
-                    start_idx = window_skip
-                else:
-                    start_idx = 0
+                for w in range(windows):
+                    try:
+                        batch = []
+                        async for msg in channel.history(limit=fetch_limit, before=current_before, oldest_first=False):
+                            batch.append(msg)
 
-                window_messages = fetched[start_idx:start_idx + limit]
+                        if not batch:
+                            logger.info(f"Channel {channel.id}: No more messages before message ID {before_message_id} (window {w})")
+                            break
 
-                for msg in window_messages:
-                    msg_data = await self._format_message(msg, skip_bot=False)
-                    if msg_data:
-                        all_messages.append(msg_data)
+                        # The oldest message in this batch becomes the 'before' cursor for next window
+                        current_before = batch[-1].id
+
+                        for msg in batch:
+                            msg_data = await self._format_message(msg, skip_bot=False)
+                            if msg_data:
+                                all_messages.append(msg_data)
+
+                        logger.info(f"Channel {channel.id}: Window {w} fetched {len(batch)} messages before message ID {before_message_id}")
+
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch messages from channel {channel.id} (before_message_id window {w}): {e}")
+                        break
+            else:
+                # ====================================================================
+                # STANDARD MODE: Fetch recent messages with optional offset/windows
+                # ====================================================================
+                for w in range(windows):
+                    # Calculate the skip offset for this window:
+                    # Window 0: skip 'offset' messages
+                    # Window 1+: skip 'offset + (w * limit)' messages
+                    if w == 0:
+                        window_skip = offset
+                    else:
+                        window_skip = offset + (w * limit)
+
+                    # Fetch (limit + skip) to be able to skip and then take 'limit'
+                    fetch_limit = window_skip + limit
+
+                    fetched = []
+                    try:
+                        async for msg in channel.history(limit=fetch_limit, oldest_first=False):
+                            fetched.append(msg)
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch messages from channel {channel.id} (window {w}): {e}")
+                        break
+
+                    # Skip the first 'window_skip' messages, then take 'limit'
+                    if window_skip > 0:
+                        if len(fetched) <= window_skip:
+                            logger.info(f"Channel {channel.id}: Window {w} has no messages at offset {window_skip}")
+                            continue
+                        start_idx = window_skip
+                    else:
+                        start_idx = 0
+
+                    window_messages = fetched[start_idx:start_idx + limit]
+
+                    for msg in window_messages:
+                        msg_data = await self._format_message(msg, skip_bot=False)
+                        if msg_data:
+                            all_messages.append(msg_data)
 
         except Exception as e:
             logger.warning(f"Failed to fetch messages from channel {channel.id}: {e}")

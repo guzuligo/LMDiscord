@@ -28,7 +28,7 @@ class Config:
             "bot_prefix": "@",
             "max_response_length": 2000,
             "temperature": 0.7,
-            "max_tokens": 2500,
+            "max_tokens": 12288,
             "enabled_tools": ["math_calc", "image_describe"],
             "suppress_werkzeug_logging": False,
             "message_delay": 5,
@@ -40,12 +40,12 @@ class Config:
         },
         "tools_config": {
             "reasoning_brevity": True,
-            "tool_max_tokens": 2048,
+            "tool_max_tokens": 12288,
             "tool_temperature": 0.3,
-            "final_max_tokens": 8192,
+            "final_max_tokens": 12288,
             "use_tool_calling": True,
             "max_tool_turns": 5,
-            "context_lm_max_tokens": 4096
+            "context_lm_max_tokens": 8192
         },
         "context_management": {
             "compression": {
@@ -422,7 +422,7 @@ class Config:
     @property
     def tool_max_tokens(self) -> int:
         """Get max_tokens for tool-calling requests."""
-        return self.get("tools_config", "tool_max_tokens", 2048)
+        return self.get("tools_config", "tool_max_tokens", 12288)
 
     @tool_max_tokens.setter
     def tool_max_tokens(self, value: int) -> None:
@@ -442,7 +442,7 @@ class Config:
     @property
     def final_max_tokens(self) -> int:
         """Get max_tokens for final response requests."""
-        return self.get("tools_config", "final_max_tokens", 8192)
+        return self.get("tools_config", "final_max_tokens", 12288)
 
     @final_max_tokens.setter
     def final_max_tokens(self, value: int) -> None:
@@ -474,12 +474,12 @@ class Config:
         tc = self._data.get("tools_config", {})
         return {
             "reasoning_brevity": tc.get("reasoning_brevity", True),
-            "tool_max_tokens": tc.get("tool_max_tokens", 2048),
+            "tool_max_tokens": tc.get("tool_max_tokens", 12288),
             "tool_temperature": tc.get("tool_temperature", 0.3),
-            "final_max_tokens": tc.get("final_max_tokens", 8192),
+            "final_max_tokens": tc.get("final_max_tokens", 12288),
             "use_tool_calling": tc.get("use_tool_calling", True),
             "max_tool_turns": tc.get("max_tool_turns", 5),
-            "context_lm_max_tokens": tc.get("context_lm_max_tokens", 4096)
+            "context_lm_max_tokens": tc.get("context_lm_max_tokens", 8192)
         }
 
     def set_tools_config(self, config: dict) -> None:

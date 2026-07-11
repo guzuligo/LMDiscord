@@ -97,7 +97,10 @@ class MessageHandler:
 
         # Set up safe image downloader
         self._allowed_hostnames = allowed_image_hostnames or []
-        self._safe_downloader = get_safe_downloader(allowed_hostnames=self._allowed_hostnames)
+        self._safe_downloader = get_safe_downloader(
+            allowed_hostnames=self._allowed_hostnames,
+            bot_instance=bot_instance
+        )
         logger.info(f"Safe image downloader initialized with allowed hostnames: {self._allowed_hostnames}")
 
         # Initialize message processor
@@ -268,7 +271,9 @@ class MessageHandler:
             "- 'context_compress': Call this when conversation history grows too large and you need to compress old messages into a summary to free up context space. Use compress_before_index to specify where to start compression. This helps prevent context overload errors.\n"
             "- 'end_session': Call this when the conversation is ending and you want to say goodbye\n\n"
             "IMPORTANT: For channel_search, you can use '#ID' for channel ID, '@name' for channel name, 'this' for current channel, or leave empty to search all channels. You do NOT need to ask the user for channel IDs.\n"
-            "IMPORTANT: When channel_search results show 'IMAGES:' with Discord CDN URLs, you can respond naturally about those images — there is no image_describe tool available.\n"
+            "IMPORTANT: When channel_search results show image URLs with '![image](URL)' format, you can respond naturally about those images — there is no image_describe tool available.\n"
+            "IMPORTANT: When sharing image URLs with users, ALWAYS use Discord's markdown image format: ![description](URL). This format renders as a clickable image preview in Discord. DO NOT share raw URLs like 'https://cdn.discordapp.com/...' without wrapping them in ![alt](URL) format.\n"
+            "IMPORTANT: When sharing Discord message links, use the format: [link text](https://discord.com/channels/GUILD/CHANNEL/MESSAGE). This creates a clickable jump link to the message.\n"
             "IMPORTANT: When calling any tool, ALWAYS include a 'tell_user_you_are_working' argument with a short, in-character status message so the user knows you are working. Make it sound natural and match your personality (e.g., 'Let me check that for you...', 'Looking through recent messages...', 'Analyzing that image now...'). This message will be posted to Discord immediately while the tool runs.\n\n"
             "WORKFLOW BEST PRACTICES:\n"
             "1. GATHER CONTEXT FIRST: Before responding, always call channel_search to check recent messages for context. This helps you understand ongoing conversations and avoid repeating information.\n"

@@ -726,10 +726,16 @@ class ToolCallHandler:
             user_feedback = args.get("user_feedback", "")
             offset = args.get("offset", 0)
             windows = args.get("windows", 1)
+            before_message_id = args.get("before_message_id")
 
             channel_display = channel if channel else "(all channels)"
+            extra_info = []
+            if user_feedback:
+                extra_info.append(f"feedback={user_feedback[:60]}")
+            if before_message_id:
+                extra_info.append(f"before_message_id={before_message_id}")
             logger.info(f"[channel_search] Searching channel {channel_display} (limit={limit}, query='{search_query}')"
-                        f"{f', feedback={user_feedback[:60]}' if user_feedback else ''}")
+                        f"{f', {', '.join(extra_info)}' if extra_info else ''}")
 
             if get_bot_instance is None:
                 logger.warning("[channel_search] No bot instance provided, returning error")
@@ -758,7 +764,7 @@ class ToolCallHandler:
                         link_channel_id = cid
                         logger.info(f"[channel_search] Extracted channel_id={link_channel_id} from conversation history (fallback)")
 
-            # If message_id is provided, pass it to get_channel_messages for direct fetch
+            # If message_id or before_message_id is provided, pass them to get_channel_messages
             result = await bot.get_channel_messages(
                 channel=str(channel),
                 limit=int(limit),
@@ -769,6 +775,7 @@ class ToolCallHandler:
                 windows=int(windows),
                 message_id=int(message_id) if message_id else None,
                 link_channel_id=int(link_channel_id) if link_channel_id else None,
+                before_message_id=int(before_message_id) if before_message_id else None,
             )
 
             messages = result.get("messages", [])
@@ -814,7 +821,19 @@ class ToolCallHandler:
                 else:
                     tool_content = error_msg
             elif make_lm_call_func and len(messages) > 5:
-                tool_content = await self._summarize_channel_search_batched(messages, search_query, user_feedback, make_lm_call_func)
+                # BUG-SEARCH-006 FIX: Conditional batch summarization
+                # Only summarize when result text would be too large for direct formatting.
+                # Estimate direct format size: ~150 chars per message + headers
+                estimated_direct_size = len(messages) * 150 + 500
+                # Threshold: only summarize if estimated direct format > 3000 chars
+                # This avoids unnecessary LM calls when direct formatting suffices
+                USE_BATCH_SUMMARIZATION_THRESHOLD = 3000
+                if estimated_direct_size > USE_BATCH_SUMMARIZATION_THRESHOLD:
+                    logger.info(f"[channel_search] Result size {estimated_direct_size} > threshold {USE_BATCH_SUMMARIZATION_THRESHOLD}, using batch summarization")
+                    tool_content = await self._summarize_channel_search_batched(messages, search_query, user_feedback, make_lm_call_func)
+                else:
+                    logger.info(f"[channel_search] Result size {estimated_direct_size} <= threshold {USE_BATCH_SUMMARIZATION_THRESHOLD}, using direct formatting")
+                    tool_content = self._format_channel_search_direct(messages, search_query, user_feedback, available_channels)
             else:
                 tool_content = self._format_channel_search_direct(messages, search_query, user_feedback, available_channels)
 
@@ -1183,7 +1202,15 @@ class ToolCallHandler:
     # --- Channel Search Summarization ---
 
     def _format_messages_for_summarization(self, messages: List[Dict]) -> str:
-        """Format messages into a text block suitable for mini-context summarization."""
+        """Format messages into a text block suitable for mini-context summarization.
+        
+        Includes universal reference metadata for all content types:
+        - Images: URL + message_id + channel_id + guild_id
+        - Files/Attachments: filename + URL + message_id + channel_id + guild_id
+        - Links/Embeds: URL + message_id + channel_id + guild_id
+        - Text Messages: content snippet + message_id + channel_id + guild_id
+        - Replies: replied content + author + message_id + channel_id + guild_id
+        """
         # Regex pattern to match Discord CDN image URLs and other image URLs
         import re
         image_url_pattern = re.compile(
@@ -1193,6 +1220,11 @@ class ToolCallHandler:
         )
 
         lines = []
+        # Track references for building the reference section
+        image_refs = []  # [ref_idx, url, msg_id, ch_id, guild_id]
+        file_refs = []   # [ref_idx, filename, url, msg_id, ch_id, guild_id]
+        text_refs = []   # [ref_idx, content_snippet, msg_id, ch_id, guild_id]
+
         for i, msg in enumerate(messages, 1):
             author = msg.get("display_name", msg.get("author", "Unknown"))
             content = msg.get("content", "")
@@ -1203,31 +1235,79 @@ class ToolCallHandler:
             channel_name = msg.get("_channel_name", "")
             has_image = msg.get("has_image", False)
             image_urls = list(msg.get("image_urls", []))  # copy to avoid modifying original
+            attachments = msg.get("attachments", [])
+            msg_message_id = msg.get("message_id") or msg.get("id", "")
+            msg_channel_id = msg.get("channel_id", "")
+            guild_id = msg.get("guild_id", "")
 
             # Extract image URLs from message content text using regex
-            # This catches URLs that were embedded in the message text but
-            # weren't captured in the image_urls field (e.g., bot responses
-            # that reference image URLs in their text)
             content_urls = image_url_pattern.findall(content)
             for url in content_urls:
-                # Clean up trailing punctuation that regex might have captured
                 while url and url[-1] in '.,;:!?)\'":]':
                     url = url[:-1]
                 if url and url not in image_urls:
                     image_urls.append(url)
 
+            # Build reference tag for this message
+            ref_tag = ""
+            if msg_message_id and msg_channel_id:
+                ref_tag = f" [msg:{msg_message_id} ch:{msg_channel_id} guild:{guild_id}]"
+
             if is_reply and replied_to_author:
                 reply_preview = replied_to_content[:80] if replied_to_content else ""
                 lines.append(f"[Reply to {replied_to_author}: \"{reply_preview}\"]")
+                # Track reply as text reference
+                if replied_to_content:
+                    text_refs.append([len(text_refs), replied_to_content[:100], msg_message_id, msg_channel_id, guild_id])
             if channel_name:
-                lines.append(f"[#{channel_name}]")
+                lines.append(f"[#{channel_name}]{ref_tag}")
             lines.append(f"--- Message {i} by {author} at {timestamp} ---")
             lines.append(content)
+
+            # Track images with references
             if image_urls:
+                for url in image_urls:
+                    ref_idx = len(image_refs)
+                    image_refs.append([ref_idx, url, msg_message_id, msg_channel_id, guild_id])
+                    lines.append(f"  ![image]({url}) [ref:img:{ref_idx}]")
                 urls_str = ", ".join(image_urls)
                 lines.append(f"[Contains {len(image_urls)} image(s): {urls_str}]")
             elif has_image:
                 lines.append("[Contains image]")
+
+            # Track file attachments with references
+            if attachments:
+                for att in attachments:
+                    if isinstance(att, str):
+                        ref_idx = len(file_refs)
+                        file_refs.append([ref_idx, att, att, msg_message_id, msg_channel_id, guild_id])
+                        lines.append(f"  [📎 Attachment: {att}] [ref:file:{ref_idx}]")
+                    elif isinstance(att, dict):
+                        filename = att.get("filename", "unknown")
+                        url = att.get("url", "")
+                        ref_idx = len(file_refs)
+                        file_refs.append([ref_idx, filename, url, msg_message_id, msg_channel_id, guild_id])
+                        lines.append(f"  [📎 Attachment: {filename}] [ref:file:{ref_idx}]")
+
+            # Track main content as text reference for search queries
+            if content and len(content.strip()) > 10:
+                text_refs.append([len(text_refs), content[:150], msg_message_id, msg_channel_id, guild_id])
+
+        # Add reference section at the end
+        all_refs = []
+        for r in image_refs:
+            all_refs.append(f"[img:{r[0]}] {r[1]} → msg:{r[2]} ch:{r[3]} guild:{r[4]}")
+        for r in file_refs:
+            all_refs.append(f"[file:{r[0]}] {r[1]} → msg:{r[2]} ch:{r[3]} guild:{r[4]}")
+        for r in text_refs:
+            all_refs.append(f"[text:{r[0]}] \"{r[1]}\" → msg:{r[2]} ch:{r[3]} guild:{r[4]}")
+
+        if all_refs:
+            lines.append("")
+            lines.append("=== REFERENCED ITEMS ===")
+            lines.extend(all_refs)
+            lines.append("=== END REFERENCES ===")
+
         return "\n".join(lines)
 
     async def _summarize_channel_search_batched(
@@ -1237,31 +1317,55 @@ class ToolCallHandler:
         user_feedback: str,
         make_lm_call_func: Any,
         batch_size: int = 10,
-        max_tokens: int = 4096
+        max_tokens: int = 12288
     ) -> str:
-        """Summarize channel search results using mini-context batched summarization."""
+        """Summarize channel search results using mini-context batched summarization.
+        
+        BUG-SEARCH-006 FIX (2026-07-11): 
+        - Increased default max_tokens from 4096 to 12288 to prevent finish_reason: length.
+        - Added token-aware batching: packs messages into batches based on estimated token count
+          rather than fixed batch_size=10.
+        - Added output length constraints to prompt (max 400 chars per batch summary).
+        """
         total = len(messages)
         summaries = []
+        
+        # BUG-SEARCH-006 FIX: Token-aware batching
+        # Estimate tokens per formatted message (~150 chars / 4 = ~38 tokens)
+        # Target ~50% of max_tokens per batch to leave headroom for response
+        estimated_tokens_per_message = 40
+        target_tokens_per_batch = max_tokens // 2  # 50% of max_tokens
+        effective_batch_size = max(5, target_tokens_per_batch // estimated_tokens_per_message)
+        
+        # Cap batch size to prevent exceeding max_tokens
+        effective_batch_size = min(effective_batch_size, 20)
+        
+        logger.info(f"[channel_search] Using token-aware batching: batch_size={effective_batch_size}, "
+                    f"max_tokens={max_tokens}, estimated_tokens_per_batch={target_tokens_per_batch}")
 
-        for start_idx in range(0, total, batch_size):
-            end_idx = min(start_idx + batch_size, total)
+        for start_idx in range(0, total, effective_batch_size):
+            end_idx = min(start_idx + effective_batch_size, total)
             batch = messages[start_idx:end_idx]
 
             batch_text = self._format_messages_for_summarization(batch)
 
+            # BUG-SEARCH-006 FIX: Add output length constraints to prompt
             summarization_prompt = (
                 f"These are recent Discord messages from a channel search. "
                 f"Search query was: '{search_query}'"
                 f"{' User context: ' + user_feedback if user_feedback else ''}."
                 f"\n\nYour task: Summarize the key points AND list ALL image URLs found.\n\n"
                 f"RULES (MUST FOLLOW):\n"
-                f"1. If any message contains image URLs (lines like '[Contains X image(s): https://...]'), you MUST list every image URL in the summary.\n"
+                f"1. If any message contains image URLs (lines like '![image](https://...)'), you MUST list every image URL in the summary.\n"
                 f"2. If any message contains file/attachment links, list them.\n"
                 f"3. Mention the authors and key content of messages.\n"
-                f"4. Keep the summary concise but DO NOT skip image URLs.\n\n"
+                f"4. Keep the summary concise but DO NOT skip image URLs.\n"
+                f"5. MAX 400 CHARACTERS per batch summary.\n"
+                f"6. List image URLs compactly — one per line, no extra text.\n"
+                f"7. List only UNIQUE image URLs (deduplicate).\n\n"
                 f"REQUIRED OUTPUT FORMAT:\n"
-                f"- First list all image URLs found (if any)\n"
-                f"- Then summarize key points/topics\n\n"
+                f"- First list all unique image URLs found (if any), one per line\n"
+                f"- Then summarize key points/topics in 2-3 sentences max\n\n"
                 f"DO NOT return an empty or near-empty summary. You must include at least the image URLs and a brief description.\n\n---\n{batch_text}"
             )
 
@@ -1309,7 +1413,12 @@ class ToolCallHandler:
         user_feedback: str,
         available_channels: Optional[Dict] = None
     ) -> str:
-        """Format channel search results directly without mini-context summarization."""
+        """Format channel search results directly without mini-context summarization.
+        
+        Includes universal reference section at the end mapping all content
+        (images, files, text) to their source message IDs for constructing
+        Discord jump links.
+        """
         if not messages:
             error_msg = "No messages found matching the specified criteria."
             if available_channels:
@@ -1322,6 +1431,11 @@ class ToolCallHandler:
         result_lines.append(f"Total matches: {len(messages)} messages")
         result_lines.append(f"")
 
+        # Track universal references
+        image_refs = []  # [ref_idx, url, msg_id, ch_id, guild_id]
+        file_refs = []   # [ref_idx, filename, url, msg_id, ch_id, guild_id]
+        text_refs = []   # [ref_idx, content_snippet, msg_id, ch_id, guild_id]
+
         for i, msg in enumerate(messages, 1):
             author = msg.get("display_name", msg.get("author", "Unknown"))
             content = msg.get("content", "")
@@ -1329,9 +1443,9 @@ class ToolCallHandler:
             is_reply = msg.get("is_reply", False)
             replied_to = msg.get("replied_to_author")
             channel_name = msg.get("_channel_name", "")
-            msg_message_id = msg.get("message_id")
-            msg_channel_id = msg.get("channel_id")
-            guild_id = msg.get("guild_id")
+            msg_message_id = msg.get("message_id") or msg.get("id", "")
+            msg_channel_id = msg.get("channel_id", "")
+            guild_id = msg.get("guild_id", "")
 
             entry_parts = []
             if channel_name:
@@ -1346,17 +1460,62 @@ class ToolCallHandler:
 
             image_urls = msg.get("image_urls", [])
             if image_urls:
+                # Use Discord-compatible markdown image format ![alt](URL)
+                # This renders as a clickable image preview in Discord
+                for url in image_urls:
+                    ref_idx = len(image_refs)
+                    image_refs.append([ref_idx, url, msg_message_id, msg_channel_id, guild_id])
+                    result_lines.append(f"  ![image]({url}) [ref:img:{ref_idx}]")
                 urls_str = ", ".join(image_urls)
-                result_lines.append(f"  IMAGES: {urls_str}")
+                result_lines.append(f"  [Image URLs for reference: {urls_str}]")
 
+            # Track file attachments
+            attachments = msg.get("attachments", [])
+            if attachments:
+                for att in attachments:
+                    if isinstance(att, str):
+                        ref_idx = len(file_refs)
+                        file_refs.append([ref_idx, att, att, msg_message_id, msg_channel_id, guild_id])
+                        result_lines.append(f"  [📎 Attachment: {att}] [ref:file:{ref_idx}]")
+                    elif isinstance(att, dict):
+                        filename = att.get("filename", "unknown")
+                        url = att.get("url", "")
+                        ref_idx = len(file_refs)
+                        file_refs.append([ref_idx, filename, url, msg_message_id, msg_channel_id, guild_id])
+                        result_lines.append(f"  [📎 Attachment: {filename}] [ref:file:{ref_idx}]")
+
+            # Track text references for search queries
+            if content and len(content.strip()) > 10:
+                ref_idx = len(text_refs)
+                text_refs.append([ref_idx, content[:150], msg_message_id, msg_channel_id, guild_id])
+
+            # Add Discord jump link
             if msg_message_id and msg_channel_id and guild_id:
                 jump_link = f"https://discord.com/channels/{guild_id}/{msg_channel_id}/{msg_message_id}"
-                result_lines.append(f"  REF: {jump_link}")
+                result_lines.append(f"  [Message link]({jump_link}) [ref:msg:{msg_message_id}]")
+
+        # Add structured reference section for LM to use
+        all_refs = []
+        for r in image_refs:
+            all_refs.append(f"[img:{r[0]}] {r[1]} → msg:{r[2]} ch:{r[3]} guild:{r[4]}")
+        for r in file_refs:
+            all_refs.append(f"[file:{r[0]}] {r[1]} → msg:{r[2]} ch:{r[3]} guild:{r[4]}")
+        for r in text_refs:
+            all_refs.append(f"[text:{r[0]}] \"{r[1]}\" → msg:{r[2]} ch:{r[3]} guild:{r[4]}")
 
         result_lines.append(f"")
-        result_lines.append(f"=== END OF RESULTS ===")
+        result_lines.append(f"=== REFERENCED ITEMS ===")
+        result_lines.append(f"Use these references to construct Discord message links:")
+        result_lines.append(f"Format: https://discord.com/channels/{{guild_id}}/{{channel_id}}/{{message_id}}")
+        result_lines.append(f"")
+        if all_refs:
+            result_lines.extend(all_refs)
+        else:
+            result_lines.append(f"(No referenced items found)")
+        result_lines.append(f"=== END REFERENCES ===")
+
         if user_feedback:
             result_lines.append(f"USER CONTEXT: {user_feedback}")
-        result_lines.append(f"INSTRUCTIONS: Read the messages above. If the search query was '{search_query}', identify which messages contain this term and provide a direct answer to the user's original question.")
+        result_lines.append(f"INSTRUCTIONS: Read the messages above. If the search query was '{search_query}', identify which messages contain this term and provide a direct answer to the user's original question. When asked for message links, use the REFERENCED ITEMS section to construct Discord jump links.")
 
         return "\n".join(result_lines)

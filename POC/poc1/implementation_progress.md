@@ -312,6 +312,71 @@
 
 ---
 
+### ✅ BUG-SEARCH-006: channel_search Batch Summarization Latency — Performance Fix
+
+| Field | Value |
+|-------|-------|
+| **ID** | BUG-SEARCH-006 |
+| **Date Implemented** | 2026-07-11 |
+| **Status** | ✅ Implemented |
+| **Severity** | Critical |
+| **Description** | Fixed the batch summarization system that causes 4+ minute latency for simple channel_search requests. |
+
+#### Root Cause
+When `channel_search` returns >5 messages, `_summarize_channel_search_batched()` splits them into batches of 10 and sends EACH batch to LM Studio for summarization BEFORE the main bot sees results. 40 messages → 5 batches → 5 LM calls → 4+ minutes.
+
+#### Fix A: Conditional Batch Summarization Threshold ✅ IMPLEMENTED
+- **File**: `src/discord_bot/tool_executor.py` → `_handle_channel_search()`
+- **Change**: Only use batch summarization when result text would exceed 3000 chars. Otherwise use direct formatting.
+- **Logic**:
+  - Estimate direct format size: `len(messages) * 150 + 500`
+  - Threshold: 3000 chars
+  - If estimated size > 3000 → batch summarize
+  - If estimated size <= 3000 → direct format (includes image URLs)
+- **Impact**: For 40 messages from the original log, estimated size = 40 * 150 + 500 = 6500 > 3000, so batch would still be used. But for smaller result sets (e.g., 10 messages = 2000 chars), direct formatting avoids unnecessary LM calls.
+
+#### Fix B: Intelligent Token-Aware Batching ✅ IMPLEMENTED
+- **File**: `src/discord_bot/tool_executor.py` → `_summarize_channel_search_batched()`
+- **Change**: Replace fixed `batch_size=10` with token-aware packing:
+  - Estimate tokens per formatted message: ~40 tokens
+  - Target: 50% of max_tokens per batch (6144 tokens for 12k max)
+  - Effective batch size: `max(5, 6144 / 40) = min(153, 20) = 20`
+  - With max_tokens=12288: batch_size = 20, so 40 messages → 2 batches (was 5)
+- **Impact**: 40 messages → 2 LM calls instead of 5 (60% reduction)
+
+#### Fix C: Increase Default max_tokens for Mini-Context ✅ IMPLEMENTED
+- **File**: `src/discord_bot/tool_executor.py` → `_summarize_channel_search_batched()`
+- **Change**: Default `max_tokens=4096` → `max_tokens=12288`
+- **Impact**: Prevents `finish_reason: "length"` truncation that caused wasted computation
+
+#### Fix D: Add Output Length Constraints ✅ IMPLEMENTED
+- **File**: `src/discord_bot/tool_executor.py` → `_summarize_channel_search_batched()` summarization prompt
+- **Change**: Added rules 5-7 to prompt:
+  - "MAX 400 CHARACTERS per batch summary"
+  - "List image URLs compactly — one per line, no extra text"
+  - "List only UNIQUE image URLs (deduplicate)"
+- **Impact**: More concise summaries, less wasted tokens
+
+#### Fix E: Make Mini-Context max_tokens Configurable via UI ✅ IMPLEMENTED
+- **Files**: `src/static/lib/settings.js`, `src/app.py`, `src/config.json`, `src/templates/index.html`, `src/static/script.js`
+- **UI Location**: Tools Config tab → Context Compression section
+- **Default**: 12288
+- **Status**: Fully implemented
+- **Changes**:
+  1. `config.json` — Added `mini_context_max_tokens: 12288` to tools_config
+  2. `app.py` — Added GET/POST endpoints for mini_context_max_tokens in `/api/tools_config`
+  3. `index.html` — Added "Mini-Context Max Tokens" input field in Context Compression section
+  4. `script.js` — Added load/save functions for miniContextMaxTokens
+
+#### Expected Performance Improvement
+| Scenario | Before | After |
+|----------|--------|-------|
+| 10 messages (found answer quickly) | 1 batch LM call (~60s) | 0 batch calls (direct format) |
+| 40 messages (original log case) | 5 batch LM calls (~270s) | 2 batch LM calls (~100s) |
+| First batch hit max_tokens | Yes (wasted 74s) | No (12k limit) |
+
+---
+
 ### ⏳ FEAT-LOG-001: Verbose Mode Toggle + Log Level Control Panel
 
 | Field | Value |

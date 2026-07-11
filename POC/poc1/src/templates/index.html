@@ -61,8 +61,8 @@
         </div>
         <div class="settings-section settings-row-2">
             <span class="toggle-label">🧠 LM Studio Max Tokens:</span>
-            <input type="number" class="delay-input" id="maxTokensInput" min="1" max="65536" value="25000" onchange="updateMaxTokens()">
-            <span class="toggle-label">tokens (range: 1-65536)</span>
+            <input type="number" class="delay-input" id="maxTokensInput" min="1" max="262144" value="12288" onchange="updateMaxTokens()">
+            <span class="toggle-label">tokens (range: 1-262144)</span>
             <span id="maxTokensStatusText" class="delay-value-display">Loading...</span>
         </div>
         <div class="settings-section settings-row-2">
@@ -302,8 +302,8 @@
                     <div class="tools-config-grid">
                         <div class="tools-config-item">
                             <label class="tools-config-label">Max Tokens:</label>
-                            <input type="number" class="tools-config-input" id="toolMaxTokens" min="128" max="65536" step="128" value="20480">
-                            <span class="tools-config-desc">Maximum response tokens for tool calls (default: 20480)</span>
+                            <input type="number" class="tools-config-input" id="toolMaxTokens" min="128" max="262144" step="128" value="12288">
+                            <span class="tools-config-desc">Maximum response tokens for tool calls (default: 12288)</span>
                         </div>
                         <div class="tools-config-item">
                             <label class="tools-config-label">Temperature:</label>
@@ -320,8 +320,8 @@
                     <div class="tools-config-grid">
                         <div class="tools-config-item">
                             <label class="tools-config-label">Max Tokens:</label>
-                            <input type="number" class="tools-config-input" id="finalMaxTokens" min="128" max="65536" step="128" value="81920">
-                            <span class="tools-config-desc">Maximum response tokens for final responses (default: 81920)</span>
+                            <input type="number" class="tools-config-input" id="finalMaxTokens" min="128" max="262144" step="128" value="12288">
+                            <span class="tools-config-desc">Maximum response tokens for final responses (default: 12288)</span>
                         </div>
                     </div>
                 </div>
@@ -381,10 +381,18 @@
                     </div>
                     <div class="server-setting-item">
                         <label class="server-setting-label">
-                            LM Max Tokens: <input type="number" id="contextLmMaxTokens" value="4096" min="512" max="32768" step="128"
+                            LM Max Tokens: <input type="number" id="contextLmMaxTokens" value="8192" min="128" max="262144" step="128"
                              style="width: 70px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary); color: var(--text-primary);">
                         </label>
-                        <span class="server-setting-desc">Maximum tokens for LM Studio summarization calls. Use 4096+ for reasoning models. (Default: 4096)</span>
+                        <span class="server-setting-desc">Maximum tokens for LM Studio summarization calls. Use up to 262144 for large context windows. (Default: 8192)</span>
+                    </div>
+                    <!-- BUG-SEARCH-006 FIX: Mini-Context Max Tokens -->
+                    <div class="server-setting-item">
+                        <label class="server-setting-label">
+                            Mini-Context Max Tokens: <input type="number" id="miniContextMaxTokens" value="12288" min="1024" max="65536" step="128"
+                             style="width: 70px; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-tertiary); color: var(--text-primary);">
+                        </label>
+                        <span class="server-setting-desc">Maximum tokens for channel_search batch summarization calls. Higher values prevent truncation and reduce the number of batch calls. (Default: 12288, range: 1024-65536)</span>
                     </div>
                 </div>
 
