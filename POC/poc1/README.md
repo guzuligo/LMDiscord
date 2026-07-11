@@ -1,85 +1,97 @@
-# Discord Bot + LM Studio Integration - POC test1
+# Discord AI Bot
 
-## Overview
-Proof of Concept implementation for a Python application with a **Flask web-based GUI** (http://localhost:5000) that connects a Discord bot to a local LM Studio instance, enabling AI-powered chat responses with configurable tools.
+A Discord bot powered by local AI (LM Studio) that provides intelligent chat responses directly in your server. It features a web-based management dashboard for easy configuration and monitoring.
 
-**GUI Type**: Flask web interface (not desktop — uses browser-based UI with HTML/CSS/JavaScript). **Note**: This is NOT a tkinter desktop app; the GUI was migrated from tkinter to Flask due to Python 3.13/Fedora compatibility issues.
+## What It Does
 
-## Structure
-- `main.py` - Application entry point
-- `src/` - Source code modules
-- `src/discord_bot/` - Modular Discord bot (6 focused modules)
-- `src/tools/` - Tools system (registry, executor, built-in tools)
-- `config_template.json` - Configuration template
+- **AI Chat Responses**: Mention the bot in Discord to get intelligent answers powered by your local LM Studio instance
+- **Conversation Memory**: Maintains context per channel so conversations feel natural and continuous
+- **Web Dashboard**: Manage everything from your browser at http://localhost:5000
+- **Tool Support**: The bot can perform math calculations, describe images, search channel messages, and more
 
-## Setup
-1. Install dependencies: `pip install -r requirements.txt`
-2. Copy `config_template.json` to `config.json` and fill in your values
-3. Set `DISCORD_BOT_TOKEN` in `.env` file
-4. Run: `python src/app.py`
-5. Open http://localhost:5000 in browser
+## Quick Start
 
-## Features
-- Discord bot with mention-triggered responses
-- LM Studio integration via OpenAI-compatible API
-- Tool calling system (context_compress, image_compare, channel_search, math_calculate, comfyui_generate*)
-- Flask web interface with Chat, Tokens, **Servers**, Settings, Logs tabs
-- **ComfyUI Generate***: Stub tool registered but not implemented (TODO placeholder)
-- **Server Configuration System** (FEAT-001 + UX-001): Per-server enable/disable and per-channel allow/deny lists
-  - **Auto-discovery**: Click "📡 Load Servers from Discord" to browse servers the bot is connected to
-  - **Quick-add servers**: Select a server from dropdown and add it to config instantly
-  - **Server names**: Servers displayed with human-readable names (e.g., "My Server (123456789012345678)")
-  - **Channel auto-discovery**: Click "🔍 Load Channels from Discord" when editing a server
-  - **Channel names**: Channels displayed with names (e.g., "#general (111111111111111111)")
-  - **Quick-add channels**: Select channels from dropdown to add to allowed/denied lists
-- Debug panel at /debug route
-- Session-based conversation management
-- Message queuing during processing
-- Configurable settings (temperature, max_tokens, delay, system prompt)
-- Safe image download with hostname whitelist
-- Token metrics streaming display
-- **Terminal Log (terminal.log)**: Auto-generated log file that mirrors ALL terminal output exactly (via stdout + stderr redirection), cleared on app startup for easy debugging sharing. Just tell me to check `terminal.log` and I can read it directly.
+### Prerequisites
 
-## Recent Features (5/14/2026 - UX-001)
-- **Server Config Auto-Discovery**: Added auto-discovery of Discord servers and channels
-  - Backend: `get_guilds_info()` and `get_guild_channels()` methods in `bot_core.py`
-  - API: `/api/discord/servers` and `/api/discord/channels/<guild_id>` endpoints
-  - Frontend: Auto-discovery UI with server/channel dropdown pickers
-  - Server list now shows names alongside IDs
-  - Channel list now shows names alongside IDs
+- Python 3.10 or higher
+- [LM Studio](https://lmstudio.ai/) running locally with an AI model loaded
+- A Discord bot token ([create one at Discord Developer Portal](https://discord.com/developers/applications))
 
-## Known Limitations
-- **ComfyUI Generate Tool (comfyui_generate)**: Registered in the tool system but NOT implemented. The file `src/tools/builtins/comfyui_generate.py` contains only TODO comments (28 lines). A working reference implementation exists at `helloworlds/comfyui_api_client.py`.
-- **Image Compare**: Uses LM Studio vision model for visual analysis, NOT algorithmic comparison (no SSIM/MSE/pixel-level diff). Single image = description, multiple images = LM-based visual comparison.
-- **Context Compression Auto-Trigger**: Configuration settings exist (`context_compression_enabled`, `context_token_threshold`, `context_message_threshold`) but the auto-trigger logic is NOT wired into the message processing loop. The tool is available for manual LM calls but won't auto-fire.
+### Installation
 
-## Recent Features (5/13/2026 - FEAT-001)
-- **Server Configuration System**: Per-server enable/disable and per-channel allow/deny lists
-  - Web UI "Servers" tab for managing server configurations
-  - Config methods: `is_server_enabled()`, `is_channel_allowed()`, `set_server_config()`
-  - API endpoints: `/api/servers`, `/api/servers/update`, `/api/servers/add_channel`, `/api/servers/remove_channel`, `/api/servers/remove`
-  - Bot automatically skips messages from disabled servers or non-allowed channels
-  - Configuration stored in `config.json` under `servers` section
+1. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## Recent Fixes (5/13/2026 - BUG-002)
-- **Fix 2a**: System prompt updated for intent-based image tool usage
-- **Fix 2b**: User-friendly blocked hostname error messages
-- **Fix 2c**: Isolated mini-context for image describe (prevents context overflow, 1160 tokens vs 6917)
-- **Fix 2d**: discord.py 2.x `is_image()` compatibility fix
+2. **Configure the bot**:
+   ```bash
+   cp config_template.json config.json
+   ```
+   Then edit `config.json` with your Discord bot token and LM Studio connection details.
 
-## Testing Results
-- ✅ Flask server starts on port 5000
-- ✅ Discord bot connects and responds to mentions
-- ✅ LM Studio integration for AI-powered responses
-- ✅ Session-based conversation context per channel
-- ✅ LM Studio tool calling (end_session, image_describe)
-- ✅ Message queuing during processing
-- ✅ All BUG-002 fixes verified with live testing
-- ✅ Terminal log (terminal.log) auto-created and mirrors terminal output exactly (stdout + stderr)
+3. **Set your Discord bot token** (alternative to config.json):
+   Create a `.env` file with:
+   ```
+   DISCORD_BOT_TOKEN=your_discord_bot_token_here
+   ```
 
-## Feature Requests
-### FEAT-003: Debug Mode Flag for Logging
-- **Problem**: Verbose DEBUG-level logs (discord.py HTTP traces, urllib3 connection details) appear on every startup even when not debugging
-- **Request**: Add `--debug` CLI flag or `DEBUG_MODE` config option to control logging verbosity
-  - Debug mode: `logging.basicConfig(level=logging.DEBUG)` — full verbose output
-  - Normal mode: `logging.basicConfig(level=logging.INFO)` — suppress library DEBUG output
+4. **Start the bot**:
+   ```bash
+   python src/app.py
+   ```
+
+5. **Open the web dashboard**:
+   Visit http://localhost:5000 in your browser
+
+## Using the Bot
+
+### In Discord
+
+- **Start a conversation**: Mention the bot in any channel (e.g., `@YourBot hello`)
+- **Follow up**: Just reply normally — the bot remembers the conversation
+- **End a session**: Say goodbye, and the bot will end the conversation automatically
+
+### Web Dashboard (http://localhost:5000)
+
+| Tab | Description |
+|-----|-------------|
+| 💬 **Chat** | View and interact with the bot's conversations |
+| 🔑 **Tokens** | Monitor AI token usage in real-time |
+| 🖥️ **Servers** | Configure which Discord servers and channels the bot responds in |
+| ⚙️ **Settings** | Adjust AI response parameters (temperature, max tokens, system prompt) |
+| 📝 **Logs** | View application logs with filtering |
+
+## Configuration
+
+Edit `config.json` to customize:
+
+- **Discord credentials**: Bot token, app ID, public key
+- **LM Studio connection**: Hostname and port (default: `localhost:1234`)
+- **Bot behavior**: Response length, temperature, enabled tools
+- **Server access control**: Enable/disable per server or per channel
+
+See `config_template.json` for all available options.
+
+## Available Tools
+
+The bot can use these tools when the AI decides they're relevant:
+
+| Tool | Description |
+|------|-------------|
+| `math_calc` | Perform mathematical calculations |
+| `image_describe` | Describe or analyze images sent in chat |
+| `channel_search` | Search through Discord channel messages |
+| `context_compress` | Compress long conversation context |
+| `memory` | Save and search memories across sessions |
+
+## Troubleshooting
+
+- **"Bot not responding"**: Make sure LM Studio is running and a model is loaded
+- **"Token not set"**: Check your `config.json` or `.env` file has the correct bot token
+- **Port 5000 already in use**: The web dashboard uses port 5000 by default — change it if needed
+- Check `terminal.log` for detailed application logs (auto-created on startup)
+
+## License
+
+This is a proof-of-concept project.
