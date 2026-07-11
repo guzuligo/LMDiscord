@@ -5,6 +5,10 @@
 config.json
 POC/test1/config.json
 
+# Git credentials (contains raw tokens)
+.git-credentials
+*.credentials
+
 # Python
 __pycache__/
 *.py[cod]
